@@ -1,6 +1,6 @@
 ---
-name: Feature request
-about: 'feat : 기능 개발'
+name: 'Feat : 기능 개발'
+about: 기능 개발
 title: ''
 labels: ''
 assignees: ''
