@@ -1,13 +1,18 @@
 from fastapi import FastAPI
-from app.api.router import api_router
 
-app = FastAPI(title="NodeXR API")
+from app.storage.minio_client import init_minio
 
-app.include_router(api_router, prefix="/api")
+app = FastAPI()
+
+
+@app.on_event("startup")
+def startup():
+
+    init_minio()
 
 
 @app.get("/")
-def health_check():
+def root():
     return {
-        "message": "NodeXR FastAPI server is running"
+        "message": "NodeXR server running"
     }
