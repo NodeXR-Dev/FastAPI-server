@@ -25,11 +25,9 @@ room_member_role_enum = ENUM(name="room_member_role", create_type=False)
 room_member_state_enum = ENUM(name="room_member_state", create_type=False)
 topic_status_enum = ENUM(name="topic_status", create_type=False)
 episode_status_enum = ENUM(name="episode_status", create_type=False)
-decision_status_enum = ENUM(name="decision_status", create_type=False)
-issue_status_enum = ENUM(name="issue_status", create_type=False)
+discussion_status_enum = ENUM(name="discussion_status", create_type=False)
 conflict_status_enum = ENUM(name="conflict_status", create_type=False)
 node_type_enum = ENUM(name="node_type", create_type=False)
-edge_type_enum = ENUM(name="edge_type", create_type=False)
 asset_type_enum = ENUM(name="asset_type", create_type=False)
 
 
@@ -72,7 +70,6 @@ class Topic(Base):
 
     topic_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     room_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("rooms.room_id"), nullable=False)
-    label: Mapped[str] = mapped_column(String, nullable=False)
     summary: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(topic_status_enum, nullable=False, server_default=text("'ACTIVE'"))
     centroid_embedding: Mapped[list[float] | None] = mapped_column(Vector())
@@ -91,10 +88,6 @@ class Episode(Base):
     topic_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("topics.topic_id"), nullable=False)
     status: Mapped[str] = mapped_column(episode_status_enum, nullable=False, server_default=text("'OPEN'"))
     summary_text: Mapped[str | None] = mapped_column(Text)
-    decisions_summary: Mapped[str | None] = mapped_column(Text)
-    constraints_summary: Mapped[str | None] = mapped_column(Text)
-    issues_summary: Mapped[str | None] = mapped_column(Text)
-    conflicts_summary: Mapped[str | None] = mapped_column(Text)
 
 
 class Utterance(Base):
@@ -113,19 +106,19 @@ class Utterance(Base):
     embedding: Mapped[list[float] | None] = mapped_column(Vector())
 
 
-class Decision(Base):
-    __tablename__ = "decisions"
+class Discussion(Base):
+    __tablename__ = "discussions"
     __table_args__ = (
-        Index("ix_decisions_room_id", "room_id"),
-        Index("ix_decisions_topic_id", "topic_id"),
-        Index("ix_decisions_status", "status"),
+        Index("ix_discussions_room_id", "room_id"),
+        Index("ix_discussions_topic_id", "topic_id"),
+        Index("ix_discussions_status", "status"),
     )
 
-    decision_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    discussion_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     room_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("rooms.room_id"), nullable=False)
     topic_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("topics.topic_id"), nullable=False)
     statement: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(decision_status_enum, nullable=False, server_default=text("'PROPOSED'"))
+    status: Mapped[str] = mapped_column(discussion_status_enum, nullable=False, server_default=text("'PROPOSED'"))
 
 
 class DecisionUtteranceLink(Base):
@@ -135,57 +128,7 @@ class DecisionUtteranceLink(Base):
     )
 
     decision_utterance_link_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    decision_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("decisions.decision_id"), nullable=False)
-    utterance_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("utterances.utterance_id"), nullable=False)
-
-
-class Constraint(Base):
-    __tablename__ = "constraints"
-    __table_args__ = (
-        Index("ix_constraints_room_id", "room_id"),
-        Index("ix_constraints_topic_id", "topic_id"),
-    )
-
-    constraint_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    room_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("rooms.room_id"), nullable=False)
-    topic_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("topics.topic_id"), nullable=False)
-    statement: Mapped[str] = mapped_column(Text, nullable=False)
-
-
-class ConstraintUtteranceLink(Base):
-    __tablename__ = "constraint_utterance_links"
-    __table_args__ = (
-        UniqueConstraint("constraint_id", "utterance_id"),
-    )
-
-    constraint_utterance_link_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    constraint_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("constraints.constraint_id"), nullable=False)
-    utterance_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("utterances.utterance_id"), nullable=False)
-
-
-class Issue(Base):
-    __tablename__ = "issues"
-    __table_args__ = (
-        Index("ix_issues_room_id", "room_id"),
-        Index("ix_issues_topic_id", "topic_id"),
-        Index("ix_issues_status", "status"),
-    )
-
-    issue_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    room_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("rooms.room_id"), nullable=False)
-    topic_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("topics.topic_id"), nullable=False)
-    question: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(issue_status_enum, nullable=False, server_default=text("'OPEN'"))
-
-
-class IssueUtteranceLink(Base):
-    __tablename__ = "issue_utterance_links"
-    __table_args__ = (
-        UniqueConstraint("issue_id", "utterance_id"),
-    )
-
-    issue_utterance_link_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    issue_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("issues.issue_id"), nullable=False)
+    decision_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("discussions.discussion_id"), nullable=False)
     utterance_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("utterances.utterance_id"), nullable=False)
 
 
@@ -194,6 +137,7 @@ class Conflict(Base):
     __table_args__ = (
         Index("ix_conflicts_room_id", "room_id"),
         Index("ix_conflicts_topic_id", "topic_id"),
+        Index("ix_conflicts_status", "status"),
     )
 
     conflict_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
@@ -214,12 +158,19 @@ class ConflictUtteranceLink(Base):
     utterance_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("utterances.utterance_id"), nullable=False)
 
 
+class Function(Base):
+    __tablename__ = "functions"
+
+    function_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    room_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("rooms.room_id"), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+
+
 class SubGraph(Base):
     __tablename__ = "sub_graphs"
 
     sub_graph_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     room_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("rooms.room_id"), nullable=False)
-    topic_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("topics.topic_id"))
 
 
 class Node(Base):
@@ -259,26 +210,7 @@ class Edge(Base):
     sub_graph_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("sub_graphs.sub_graph_id"))
     from_node_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("nodes.node_id"), nullable=False)
     to_node_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("nodes.node_id"), nullable=False)
-    edge_type: Mapped[str] = mapped_column(edge_type_enum, nullable=False)
-
-
-class PartNode(Base):
-    __tablename__ = "part_nodes"
-
-    part_node_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    room_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("rooms.room_id"), nullable=False)
-    part_name: Mapped[str] = mapped_column(String, nullable=False)
-
-
-class PartNodeNodeLink(Base):
-    __tablename__ = "part_node_node_links"
-    __table_args__ = (
-        UniqueConstraint("part_node_id", "node_id"),
-    )
-
-    part_node_node_link_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    part_node_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("part_nodes.part_node_id"), nullable=False)
-    node_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("nodes.node_id"), nullable=False)
+    label: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class GraphSnapshot(Base):
