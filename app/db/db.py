@@ -132,32 +132,6 @@ class DecisionUtteranceLink(Base):
     utterance_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("utterances.utterance_id"), nullable=False)
 
 
-class Conflict(Base):
-    __tablename__ = "conflicts"
-    __table_args__ = (
-        Index("ix_conflicts_room_id", "room_id"),
-        Index("ix_conflicts_topic_id", "topic_id"),
-        Index("ix_conflicts_status", "status"),
-    )
-
-    conflict_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    room_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("rooms.room_id"), nullable=False)
-    topic_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("topics.topic_id"), nullable=False)
-    conflict_summary: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(conflict_status_enum, nullable=False, server_default=text("'SUSPECTED'"))
-
-
-class ConflictUtteranceLink(Base):
-    __tablename__ = "conflict_utterance_links"
-    __table_args__ = (
-        UniqueConstraint("conflict_id", "utterance_id"),
-    )
-
-    conflict_utterance_link_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    conflict_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("conflicts.conflict_id"), nullable=False)
-    utterance_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("utterances.utterance_id"), nullable=False)
-
-
 class Function(Base):
     __tablename__ = "functions"
 
