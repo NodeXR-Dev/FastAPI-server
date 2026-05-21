@@ -20,6 +20,11 @@ class Settings(BaseSettings):
 
     GEMINI_API_KEY: str | None = None
     MESHY_API_KEY: str | None = None
+    
+    EMBEDDING_DIM: int = 1536
+    
+    TOPIC_DRIFT_THRESHOLD: float = 0.55
+    DISCUSSION_SIMILARITY_THRESHOLD: float = 0.78
 
     model_config = SettingsConfigDict(
         env_file=".env",
