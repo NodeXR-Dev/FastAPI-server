@@ -24,7 +24,7 @@ class Topic(Base):
 
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[TopicStatus] = mapped_column(Enum(TopicStatus), nullable=False, default=TopicStatus.ACTIVE)
-    centroid_embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
+    centroid_embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
     last_activity_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     room = relationship("Room", back_populates="topics")
@@ -106,7 +106,7 @@ class Utterance(Base):
 
     original_text: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
 
     state: Mapped[UtteranceType | None] = mapped_column(Enum(UtteranceType), nullable=True)
 
@@ -134,7 +134,7 @@ class Discussion(Base):
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
     resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
 
     status: Mapped[DiscussionStatus] = mapped_column(
         Enum(DiscussionStatus),
@@ -220,7 +220,7 @@ class SemanticMemory(Base):
     )
 
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
 
     importance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
