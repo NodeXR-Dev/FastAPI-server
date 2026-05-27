@@ -34,6 +34,7 @@ class Room(Base):
     graph_snapshots = relationship("GraphSnapshot", back_populates="room")
     assets = relationship("Asset", back_populates="room")
     references = relationship("Reference", back_populates="room")
+    semantic_memories = relationship("SemanticMemory", back_populates="room")
 
 
 class RoomMember(Base):

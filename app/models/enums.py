@@ -21,7 +21,7 @@ class EpisodeStatus(str, enum.Enum):
     CLOSED = "CLOSED"
 
 
-class DecisionStatus(str, enum.Enum):
+class DiscussionStatus(str, enum.Enum):
     ACTIVE = "ACTIVE"
     ISSUE = "ISSUE"
     CONFLICT = "CONFLICT"
@@ -43,3 +43,11 @@ class AssetType(str, enum.Enum):
 class UtteranceType(str, enum.Enum):
     REFLECT = "REFLECT"
     NOREFLECT = "NOREFLECT"
+
+
+class SemanticMemoryType(str, enum.Enum):
+    SUMMARY = "SUMMARY"
+    DECISION = "DECISION"
+    ISSUE = "ISSUE"
+    CONFLICT = "CONFLICT"
+    CONTEXT = "CONTEXT"
