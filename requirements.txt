@@ -13,10 +13,12 @@ python-dotenv
 langchain
 langchain-community
 langchain-google-genai
+google-genai
+openai
 sentence-transformers
 transformers
-torch
 
 minio
 httpx
 python-multipart
+python-dotenv
