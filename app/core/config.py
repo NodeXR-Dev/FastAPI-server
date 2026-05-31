@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str
 
     DATABASE_URL: str
+    DB_ECHO: bool
 
     MINIO_ENDPOINT: str
     MINIO_ACCESS_KEY: str
