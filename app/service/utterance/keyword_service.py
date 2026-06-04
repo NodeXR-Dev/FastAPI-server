@@ -14,7 +14,7 @@ from app.ai.prompts.keyword_prompt import (
     KEYWORD_EXTRACT_SYSTEM_PROMPT,
     build_keyword_extract_prompt,
 )
-from app.schemas.openai.keyword import KeywordExtractResult
+from app.schema.openai.keyword import KeywordExtractResult
 
 logger = get_logger(__name__)
 
@@ -37,25 +37,29 @@ class KeywordService:
         self.model_name = os.getenv("OPENAI_MODEL_NAME", "gpt-4o-mini")
         self.max_nodes = int(os.getenv("GRAPH_EXTRACT_MAX_NODES", "5"))
 
-    def keyword_extract(self, text: str) -> KeywordExtractResult:
-        stage = "graph_extract"
+    def keyword_extract(
+        self, 
+        utterance: str, 
+        parent_node_text: str | None = None
+        ) -> KeywordExtractResult:
+        
+        stage = "openai_keyword_extract"
         start_time = time.perf_counter()
 
         logger.info(
-            "[graph_extract] start | text_length=%s | model=%s",
-            len(text) if text is not None else None,
+            "[openai_keyword_extract] start | text_length=%s | model=%s",
+            len(utterance) if utterance is not None else None,
             self.model_name,
         )
 
         try:
-            if text is None or not text.strip():
+            if utterance is None or not utterance.strip():
                 raise BadRequestException(
                     code=ResponseCode.BTUTT400,
-                    message="그래프를 추출할 발화 내용은 비어 있을 수 없습니다.",
                 )
 
             client = get_openai_client()
-            prompt = build_keyword_extract_prompt(text.strip())
+            prompt = build_keyword_extract_prompt(utterance.strip(), parent_node_text)
 
             completion = client.chat.completions.parse(
                 model=self.model_name,

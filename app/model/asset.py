@@ -1,12 +1,22 @@
-import uuid
-from datetime import datetime
+# app/models/asset.py
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, Text
+import uuid
+
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
-from app.models.enums import AssetType
+from app.model.enum import AssetType
 
 
 class Asset(Base):
@@ -27,23 +37,25 @@ class Asset(Base):
     graph_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("graph_snapshots.graph_snapshot_id"),
-        nullable=True,
     )
 
     asset_type: Mapped[AssetType] = mapped_column(
-        Enum(AssetType),
+        Enum(AssetType, name="asset_type"),
         nullable=False,
     )
 
     file_url: Mapped[str] = mapped_column(Text, nullable=False)
-    prompt_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_text: Mapped[str | None] = mapped_column(Text)
 
-    room = relationship("Room", back_populates="assets")
-    graph_snapshot = relationship("GraphSnapshot", back_populates="assets")
+    created_at: Mapped[object] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
 
     __table_args__ = (
         Index("ix_assets_room_id", "room_id"),
         Index("ix_assets_graph_snapshot_id", "graph_snapshot_id"),
+        Index("ix_assets_asset_type", "asset_type"),
     )
 
 
@@ -65,19 +77,19 @@ class Reference(Base):
     node_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("nodes.node_id"),
-        nullable=True,
     )
 
-    query_text: Mapped[str | None] = mapped_column(String, nullable=True)
+    query_text: Mapped[str | None] = mapped_column(String)
     image_url: Mapped[str] = mapped_column(Text, nullable=False)
 
-    mime_type: Mapped[str | None] = mapped_column(String, nullable=True)
-    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String)
+    width: Mapped[int | None] = mapped_column(Integer)
+    height: Mapped[int | None] = mapped_column(Integer)
 
-    room = relationship("Room", back_populates="references")
-    node = relationship("Node", back_populates="references")
+    created_at: Mapped[object] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
 
     __table_args__ = (
         Index("ix_references_room_id", "room_id"),

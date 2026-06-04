@@ -1,4 +1,4 @@
-# app/services/utterances/text_preprocess_service.py
+# app/service/utterance/text_preprocess_service.py
 
 import re
 import time
@@ -13,26 +13,11 @@ logger = get_logger(__name__)
 
 class TextPreprocessService:
     def utterance_preprocess(self, text: str) -> str:
-        """
-        STT 결과 발화를 regex 기반으로 정규화한다.
-
-        정규화 범위:
-        - None / 빈 문자열 / 공백 문자열 방지
-        - 앞뒤 공백 제거
-        - 줄바꿈, 탭을 공백으로 변환
-        - 중복 공백 제거
-        - 반복 문장부호 정리
-        - 정규화 후 빈 문자열 재검증
-
-        추후 필요 시 transformers 기반 문장 교정 모델을
-        _model_normalize() 같은 별도 함수로 추가하면 된다.
-        """
-
-        stage = "utterance_preprocess"
+        stage = "service_text_preprocess_service_utterance_preprocess"
         start_time = time.perf_counter()
 
         logger.info(
-            "[utterance_preprocess] start | original_length=%s",
+            "[service_text_preprocess_service_utterance_preprocess] start | original_length=%s",
             len(text) if text is not None else None,
         )
 
@@ -55,7 +40,7 @@ class TextPreprocessService:
             avg_ms = performance_tracker.record(stage, elapsed_ms)
 
             logger.info(
-                "[utterance_preprocess] done | elapsed_ms=%.2f | avg_ms=%.2f | normalized_length=%s",
+                "[service_text_preprocess_service_utterance_preproces] done | elapsed_ms=%.2f | avg_ms=%.2f | normalized_length=%s",
                 elapsed_ms,
                 avg_ms,
                 len(normalized_text),
@@ -67,7 +52,7 @@ class TextPreprocessService:
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 
             logger.warning(
-                "[utterance_preprocess] bad_request | elapsed_ms=%.2f",
+                "[service_text_preprocess_service_utterance_preproces] bad_request | elapsed_ms=%.2f",
                 elapsed_ms,
             )
 
@@ -77,7 +62,7 @@ class TextPreprocessService:
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 
             logger.exception(
-                "[utterance_preprocess] failed | elapsed_ms=%.2f | error=%s",
+                "[service_text_preprocess_service_utterance_preproces] failed | elapsed_ms=%.2f | error=%s",
                 elapsed_ms,
                 str(e),
             )
@@ -89,10 +74,16 @@ class TextPreprocessService:
 
     def _regex_normalize(self, text: str) -> str:
         """
-        regex 기반 기본 정규화.
-        모델을 쓰지 않는 빠른 전처리 단계.
-        """
+        STT 결과 발화를 regex 기반으로 정규화한다.
 
+        정규화 범위:
+        - None / 빈 문자열 / 공백 문자열 방지
+        - 앞뒤 공백 제거
+        - 줄바꿈, 탭을 공백으로 변환
+        - 중복 공백 제거
+        - 반복 문장부호 정리
+        - 정규화 후 빈 문자열 재검증
+        """
         normalized_text = text.strip()
 
         # 줄바꿈, 탭을 공백으로 변환

@@ -5,6 +5,7 @@ sqlalchemy
 psycopg[binary]
 alembic
 pgvector
+asyncpg
 
 pydantic
 pydantic-settings

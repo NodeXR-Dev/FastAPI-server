@@ -1,21 +1,27 @@
+# app/converter/graph_converter.py
+
 from uuid import UUID
 
-from app.schemas.graph.response import (
+from app.model.graph import Node, Edge
+from app.schema.graph.response import (
+    NodeGraphResponse,
+    GraphResponse,
     GraphNodeResponse,
     GraphEdgeResponse,
-    GraphResponse,
-    NodeGraphResponse,
 )
 
 
 class GraphConverter:
+
     def to_node_graph_response(
         self,
+        *,
         room_id: UUID,
-        nodes,
-        edges,
-        graph_version: int = 1,
+        nodes: list[Node],
+        edges: list[Edge],
+        graph_version: int,
     ) -> NodeGraphResponse:
+
         return NodeGraphResponse(
             room_id=room_id,
             graph=GraphResponse(
@@ -26,9 +32,9 @@ class GraphConverter:
                         type=node.node_type,
                         node_text=node.node_text,
                         position=[
-                            node.position_x,
-                            node.position_y,
-                            node.position_z,
+                            node.position_x if node.position_x is not None else 0.0,
+                            node.position_y if node.position_y is not None else 0.0,
+                            node.position_z if node.position_z is not None else 0.0,
                         ],
                         parent_node_id=node.parent_node_id,
                         data={},
@@ -44,5 +50,5 @@ class GraphConverter:
                     )
                     for edge in edges
                 ],
-            )
+            ),
         )
