@@ -1,4 +1,4 @@
 from app.db.base import Base
-import app.models
+import app.model
 
 target_metadata = Base.metadata

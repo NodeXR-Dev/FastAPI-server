@@ -1,9 +1,9 @@
 from contextlib import asynccontextmanager
 
-from app.services.utterances.embedding_service import get_embedding_model
+from app.service.utterance.embedding_service import get_embedding_model
 from fastapi import FastAPI
 
-from app.api.routes.utterance import router as utterance_router
+from app.api.utterance import router as utterance_router
 
 from app.core.response.exceptions import BaseCustomException, NotFoundException, ServerException
 from app.core.response.exception_handler import (

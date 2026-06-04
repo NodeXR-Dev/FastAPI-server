@@ -7,12 +7,13 @@ from app.core.logger import get_logger
 from app.core.performance import performance_tracker
 from app.core.response.code import ResponseCode
 from app.core.response.exceptions import BadRequestException, ServerException
-from app.schemas.graph.response import (
+from app.model.enum import NodeType
+from app.schema.graph.response import (
     GraphNodeResponse,
     GraphEdgeResponse,
     GraphResponse,
 )
-from app.schemas.openai.keyword import KeywordExtractResult
+from app.schema.openai.keyword import KeywordExtractResult
 
 logger = get_logger(__name__)
 
@@ -23,11 +24,11 @@ class GraphBuildService:
         extraction: KeywordExtractResult,
         parent_node_id: UUID | None = None,
     ) -> GraphResponse:
-        stage = "graph_build"
+        stage = "service_graph_build_graph_from_extraction"
         start_time = time.perf_counter()
 
         logger.info(
-            "[graph_build] start | node_count=%s | parent_node_id=%s",
+            "[service_graph_build_graph_from_extraction] start | node_count=%s | parent_node_id=%s",
             len(extraction.nodes) if extraction is not None else None,
             parent_node_id,
         )
@@ -52,7 +53,7 @@ class GraphBuildService:
                 nodes.append(
                     GraphNodeResponse(
                         node_id=node_id,
-                        type=extracted_node.node_type,
+                        type=NodeType.PROPERTY,
                         node_text=extracted_node.node_text,
                         position=[],
                         parent_node_id=parent_node_id,

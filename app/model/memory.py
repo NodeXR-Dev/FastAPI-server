@@ -16,8 +16,8 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
-from app.models.base import Base
-from app.models.enums import (
+from app.db.base import Base
+from app.model.enum import (
     AlertStatus,
     AlertType,
     DesignFactLinkType,
@@ -141,7 +141,6 @@ class DesignFact(Base):
     status: Mapped[DesignFactStatus] = mapped_column(
         Enum(DesignFactStatus, name="design_fact_status"),
         nullable=False,
-        default=DesignFactStatus.CANDIDATE,
     )
 
     content: Mapped[str] = mapped_column(Text, nullable=False)

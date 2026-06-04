@@ -1,5 +1,5 @@
 from uuid import UUID
-from app.models.enums import NodeType
+from app.model.enum import NodeType
 from pydantic import BaseModel, Field
 from typing import Any
 from app.core.validators import NotBlankStr

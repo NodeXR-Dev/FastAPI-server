@@ -1,8 +1,8 @@
-# app/models/__init__.py
+# app/model/__init__.py
 
-from app.models.base import Base
+from app.db.base import Base
 
-from app.models.room import (
+from app.model.room import (
     User,
     Room,
     RoomMember,
@@ -10,7 +10,7 @@ from app.models.room import (
     Utterance,
 )
 
-from app.models.memory import (
+from app.model.memory import (
     SemanticMemory,
     DesignFact,
     DesignFactLink,
@@ -18,7 +18,7 @@ from app.models.memory import (
     AgentAlert,
 )
 
-from app.models.graph import (
+from app.model.graph import (
     SubGraph,
     Node,
     Edge,
@@ -28,7 +28,7 @@ from app.models.graph import (
     Feature,
 )
 
-from app.models.asset import (
+from app.model.asset import (
     Asset,
     Reference,
 )

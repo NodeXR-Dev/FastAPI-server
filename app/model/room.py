@@ -17,8 +17,8 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
-from app.models.base import Base
-from app.models.enums import (
+from app.db.base import Base
+from app.model.enum import (
     RoomMemberRole,
     RoomMemberState,
     TopicStatus,
@@ -199,6 +199,7 @@ class Utterance(Base):
 
     state: Mapped[UtteranceState | None] = mapped_column(
         Enum(UtteranceState, name="utterance_state"),
+        default=UtteranceState.NOREFLECT,
     )
 
     created_at: Mapped[object] = mapped_column(
