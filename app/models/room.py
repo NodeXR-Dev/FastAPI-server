@@ -1,12 +1,48 @@
-import uuid
-from datetime import datetime
+# app/models/room.py
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, UniqueConstraint
+import uuid
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from pgvector.sqlalchemy import Vector
 
-from app.db.base import Base
-from app.models.enums import RoomMemberRole, RoomMemberState
+from app.models.base import Base
+from app.models.enums import (
+    RoomMemberRole,
+    RoomMemberState,
+    TopicStatus,
+    UtteranceState,
+)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    room_members: Mapped[list["RoomMember"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    utterances: Mapped[list["Utterance"]] = relationship(
+        back_populates="user",
+    )
 
 
 class Room(Base):
@@ -19,22 +55,28 @@ class Room(Base):
     )
 
     topic: Mapped[str] = mapped_column(String, nullable=False)
-    room_password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    room_password_hash: Mapped[str | None] = mapped_column(String)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    members = relationship("RoomMember", back_populates="room")
-    topics = relationship("Topic", back_populates="room")
-    episodes = relationship("Episode", back_populates="room")
-    utterances = relationship("Utterance", back_populates="room")
-    discussions = relationship("Discussion", back_populates="room")
-    sub_graphs = relationship("SubGraph", back_populates="room")
-    nodes = relationship("Node", back_populates="room")
-    edges = relationship("Edge", back_populates="room")
-    graph_snapshots = relationship("GraphSnapshot", back_populates="room")
-    assets = relationship("Asset", back_populates="room")
-    references = relationship("Reference", back_populates="room")
-    semantic_memories = relationship("SemanticMemory", back_populates="room")
+    created_at: Mapped[object] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    members: Mapped[list["RoomMember"]] = relationship(
+        back_populates="room",
+        cascade="all, delete-orphan",
+    )
+
+    topics: Mapped[list["Topic"]] = relationship(
+        back_populates="room",
+        cascade="all, delete-orphan",
+    )
+
+    utterances: Mapped[list["Utterance"]] = relationship(
+        back_populates="room",
+        cascade="all, delete-orphan",
+    )
 
 
 class RoomMember(Base):
@@ -59,22 +101,118 @@ class RoomMember(Base):
     )
 
     role: Mapped[RoomMemberRole] = mapped_column(
-        Enum(RoomMemberRole),
+        Enum(RoomMemberRole, name="room_member_role"),
         nullable=False,
     )
 
     state: Mapped[RoomMemberState] = mapped_column(
-        Enum(RoomMemberState),
+        Enum(RoomMemberState, name="room_member_state"),
         nullable=False,
     )
 
-    room = relationship("Room", back_populates="members")
-    user = relationship("User", back_populates="room_members")
+    room: Mapped["Room"] = relationship(back_populates="members")
+    user: Mapped["User"] = relationship(back_populates="room_members")
 
     __table_args__ = (
-        UniqueConstraint(
-            "room_id",
-            "user_id",
-            name="uq_room_members_room_id_user_id",
-        ),
+        UniqueConstraint("room_id", "user_id", name="uq_room_members_room_user"),
+    )
+
+
+class Topic(Base):
+    __tablename__ = "topics"
+
+    topic_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    room_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("rooms.room_id"),
+        nullable=False,
+    )
+
+    summary: Mapped[str | None] = mapped_column(Text)
+
+    status: Mapped[TopicStatus] = mapped_column(
+        Enum(TopicStatus, name="topic_status"),
+        nullable=False,
+        default=TopicStatus.ACTIVE,
+    )
+
+    centroid_embedding = mapped_column(Vector(768))
+
+    created_at: Mapped[object] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updated_at: Mapped[object | None] = mapped_column(
+        DateTime(timezone=True),
+        onupdate=func.now(),
+    )
+
+    room: Mapped["Room"] = relationship(back_populates="topics")
+
+    utterances: Mapped[list["Utterance"]] = relationship(
+        back_populates="topic",
+    )
+
+    __table_args__ = (
+        Index("ix_topics_room_id", "room_id"),
+        Index("ix_topics_status", "status"),
+        Index("ix_topics_room_status", "room_id", "status"),
+    )
+
+
+class Utterance(Base):
+    __tablename__ = "utterances"
+
+    utterance_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    room_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("rooms.room_id"),
+        nullable=False,
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id"),
+        nullable=False,
+    )
+
+    topic_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("topics.topic_id"),
+    )
+
+    original_text: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_text: Mapped[str | None] = mapped_column(Text)
+
+    embedding = mapped_column(Vector(768))
+
+    state: Mapped[UtteranceState | None] = mapped_column(
+        Enum(UtteranceState, name="utterance_state"),
+    )
+
+    created_at: Mapped[object] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    room: Mapped["Room"] = relationship(back_populates="utterances")
+    user: Mapped["User"] = relationship(back_populates="utterances")
+    topic: Mapped["Topic | None"] = relationship(back_populates="utterances")
+
+    __table_args__ = (
+        Index("ix_utterances_room_id", "room_id"),
+        Index("ix_utterances_user_id", "user_id"),
+        Index("ix_utterances_topic_id", "topic_id"),
+        Index("ix_utterances_created_at", "created_at"),
     )
