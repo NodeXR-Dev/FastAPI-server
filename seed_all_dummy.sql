@@ -12,11 +12,11 @@ BEGIN;
 -- =========================
 -- users
 -- =========================
-INSERT INTO users (user_id)
+INSERT INTO users (user_id, nickname)
 VALUES
-  ('11111111-1111-1111-1111-111111111111'),
-  ('22222222-2222-2222-2222-222222222222'),
-  ('33333333-3333-3333-3333-333333333333')
+  ('11111111-1111-1111-1111-111111111111', 'nickname1'),
+  ('22222222-2222-2222-2222-222222222222', 'nickname2'),
+  ('33333333-3333-3333-3333-333333333333', 'nickname3')
 ON CONFLICT (user_id) DO NOTHING;
 
 
@@ -64,21 +64,21 @@ VALUES
     'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     '11111111-1111-1111-1111-111111111111',
     'LEADER',
-    'ACTIVE'
+    'JOINED'
   ),
   (
     'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002',
     'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     '22222222-2222-2222-2222-222222222222',
     'TEAMMATE',
-    'ACTIVE'
+    'JOINED'
   ),
   (
     'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb003',
     'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaab',
     '33333333-3333-3333-3333-333333333333',
     'LEADER',
-    'LEFT'
+    'JOINED'
   )
 ON CONFLICT (room_id, user_id) DO NOTHING;
 

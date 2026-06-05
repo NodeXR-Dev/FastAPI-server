@@ -17,3 +17,6 @@ class NotFoundException(BaseCustomException):
 
 class ServerException(BaseCustomException):
     pass
+
+class UnauthorizedException(BaseCustomException):
+    pass
