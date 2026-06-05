@@ -34,6 +34,11 @@ class User(Base):
         primary_key=True,
         default=uuid.uuid4,
     )
+    
+    nickname: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+    )
 
     room_members: Mapped[list["RoomMember"]] = relationship(
         back_populates="user",

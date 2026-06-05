@@ -9,7 +9,7 @@ class RoomMemberRole(str, enum.Enum):
 
 
 class RoomMemberState(str, enum.Enum):
-    ACTIVE = "ACTIVE"
+    JOINED = "JOINED"
     LEFT = "LEFT"
 
 
