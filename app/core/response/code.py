@@ -47,7 +47,10 @@ RESPONSE_MESSAGES = {
     ResponseCode.ROOM201: "회의실 목록 조회 성공",
     ResponseCode.ROOM202: "회의실 상세 정보 조회 성공",
     ResponseCode.ROOM203: "회의실 최초 입장 성공",
-    ResponseCode.ROOM204: "회의실 재입장 성공"
+    ResponseCode.ROOM204: "회의실 재입장 성공",
+    ResponseCode.ROOM400: "잘못된 회의실 요청입니다.",
+    ResponseCode.ROOM401: "회의실 비밀번호가 일치하지 않습니다.",
+    ResponseCode.ROOM404: "회의실을 찾을 수 없습니다.",
 }
 
 

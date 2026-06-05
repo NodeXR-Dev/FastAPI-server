@@ -19,3 +19,4 @@ class CreateRoomRequest(BaseModel):
 class EnterRoomRequest(BaseModel):
     room_id: UUID
     nickname: NotBlankStr
+    password: NotBlankStr

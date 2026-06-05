@@ -23,3 +23,5 @@ minio
 httpx
 python-multipart
 python-dotenv
+
+passlib[bcrypt]

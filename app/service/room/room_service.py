@@ -1,5 +1,3 @@
-# app/services/room_service.py
-
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -20,6 +18,16 @@ from app.schema.room.response import (
     RoomInfoResult,
     RoomInfoUserResponse,
 )
+from app.core.security import hash_password, verify_password
+from app.core.response.code import ResponseCode
+from app.core.response.exceptions import (
+    BadRequestException,
+    UnauthorizedException,
+    NotFoundException,
+)
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class RoomService:
@@ -35,9 +43,22 @@ class RoomService:
         request: CreateRoomRequest,
         db: Session,
     ) -> CreateRoomResult:
+        logger.info(
+            "[create_room] start | topic=%s | nickname=%s",
+            request.room_topic,
+            request.nickname,
+        )
+
+        if not request.room_topic or not request.password or not request.nickname:
+            logger.warning("[create_room] invalid request")
+            raise BadRequestException(
+                code=ResponseCode.ROOM400,
+                message="회의실 생성 요청값이 올바르지 않습니다.",
+            )
+
         room = Room(
             topic=request.room_topic,
-            room_password_hash=request.password,
+            room_password_hash=hash_password(request.password),
             is_active=True,
         )
         room = self.room_repository.save_room(db, room)
@@ -59,10 +80,16 @@ class RoomService:
         db.refresh(room)
         db.refresh(leader)
 
+        logger.info(
+            "[create_room] success | room_id=%s | leader_id=%s",
+            room.room_id,
+            leader.user_id,
+        )
+
         return CreateRoomResult(
             room_id=room.room_id,
             room_topic=room.topic,
-            password=room.room_password_hash,
+            password=request.password,
             leader=leader.nickname,
             created_at=room.created_at,
         )
@@ -75,6 +102,8 @@ class RoomService:
         self,
         db: Session,
     ) -> RoomListResult:
+        logger.info("[get_room_list] start")
+
         rooms = self.room_repository.find_rooms(db)
 
         room_items: list[RoomListItemResponse] = []
@@ -103,6 +132,8 @@ class RoomService:
                 )
             )
 
+        logger.info("[get_room_list] success | count=%s", len(room_items))
+
         return RoomListResult(
             rooms=room_items,
         )
@@ -116,10 +147,16 @@ class RoomService:
         db: Session,
         room_id: UUID,
     ) -> RoomInfoResult:
+        logger.info("[get_room_info] start | room_id=%s", room_id)
+
         room = self.room_repository.find_room_by_id(db, room_id)
 
         if room is None:
-            raise ValueError("ROOM_NOT_FOUND")
+            logger.warning("[get_room_info] room not found | room_id=%s", room_id)
+            raise NotFoundException(
+                code=ResponseCode.ROOM404,
+                message="회의실을 찾을 수 없습니다.",
+            )
 
         users = [
             RoomInfoUserResponse(
@@ -129,6 +166,12 @@ class RoomService:
             )
             for member in room.members
         ]
+
+        logger.info(
+            "[get_room_info] success | room_id=%s | user_count=%s",
+            room.room_id,
+            len(users),
+        )
 
         return RoomInfoResult(
             room_id=room.room_id,
@@ -148,13 +191,34 @@ class RoomService:
         db: Session,
         request: EnterRoomRequest,
     ) -> tuple[EnterRoomResult, bool]:
+        logger.info(
+            "[enter_room] start | room_id=%s | nickname=%s",
+            request.room_id,
+            request.nickname,
+        )
+
         room = self.room_repository.find_room_by_id(
             db=db,
             room_id=request.room_id,
         )
 
         if room is None:
-            raise ValueError("ROOM_NOT_FOUND")
+            logger.warning("[enter_room] room not found | room_id=%s", request.room_id)
+            raise NotFoundException(
+                code=ResponseCode.ROOM404,
+                message="회의실을 찾을 수 없습니다.",
+            )
+
+        if not verify_password(request.password, room.room_password_hash):
+            logger.warning(
+                "[enter_room] password mismatch | room_id=%s | nickname=%s",
+                request.room_id,
+                request.nickname,
+            )
+            raise UnauthorizedException(
+                code=ResponseCode.ROOM401,
+                message="회의실 비밀번호가 일치하지 않습니다.",
+            )
 
         existing_member = self.room_repository.find_member_by_room_and_nickname(
             db=db,
@@ -178,6 +242,12 @@ class RoomService:
             result = EnterRoomResult(
                 room_id=room.room_id,
                 user_id=existing_member.user_id,
+            )
+
+            logger.info(
+                "[enter_room] reenter success | room_id=%s | user_id=%s",
+                room.room_id,
+                existing_member.user_id,
             )
 
             return result, True
@@ -208,6 +278,12 @@ class RoomService:
         result = EnterRoomResult(
             room_id=room.room_id,
             user_id=user.user_id,
+        )
+
+        logger.info(
+            "[enter_room] first enter success | room_id=%s | user_id=%s",
+            room.room_id,
+            user.user_id,
         )
 
         return result, False
