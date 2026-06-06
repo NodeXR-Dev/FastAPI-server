@@ -36,13 +36,27 @@ class ResponseCode(str, Enum):
     ROOM401 = "ROOM401"  # 회의실 비밀번호 불일치
     ROOM404 = "ROOM404"  # 회의실 없음
     
+    # =========================
+    # Feature
+    # =========================
+    FEATURE200 = "FEATURE200"  # 기능 생성 성공
+    FEATURE201 = "FEATURE201"  # 기능 수정 성공
+    FEATURE202 = "FEATURE202"  # 기능 삭제 성공
+    FEATURE203 = "FEATURE203"  # 기능 목록 조회 성공
+    
+    FEATURE400 = "FEATURE400"  # 잘못된 기능 요청
+    FEATURE404 = "FEATURE404"  # 기능 없음
+    
 RESPONSE_MESSAGES = {
     ResponseCode.BTUTT200: "버튼 조작 발화 처리 성공",
     ResponseCode.BTUTT400: "발화 요청값이 올바르지 않습니다.",
     ResponseCode.BTUTT404: "발화 처리에 필요한 리소스를 찾을 수 없습니다.",
     ResponseCode.BTUTT500: "발화 처리 중 서버 오류가 발생했습니다.",
+    
     ResponseCode.UTT404: "해당 발화 객체가 존재하지 않습니다.",
+    
     ResponseCode.NODE404: "해당 노드 객체가 존재하지 않습니다.",
+    
     ResponseCode.ROOM200: "회의실 생성 성공",
     ResponseCode.ROOM201: "회의실 목록 조회 성공",
     ResponseCode.ROOM202: "회의실 상세 정보 조회 성공",
@@ -51,6 +65,13 @@ RESPONSE_MESSAGES = {
     ResponseCode.ROOM400: "잘못된 회의실 요청입니다.",
     ResponseCode.ROOM401: "회의실 비밀번호가 일치하지 않습니다.",
     ResponseCode.ROOM404: "회의실을 찾을 수 없습니다.",
+    
+    ResponseCode.FEATURE200: "기능 생성 성공",
+    ResponseCode.FEATURE201: "기능 수정 성공",
+    ResponseCode.FEATURE202: "기능 삭제 성공",
+    ResponseCode.FEATURE203: "기능 목록 조회 성공", 
+    ResponseCode.FEATURE400: "잘못된 기능 요청입니다.",
+    ResponseCode.FEATURE404: "기능을 찾을 수 없습니다.",
 }
 
 
