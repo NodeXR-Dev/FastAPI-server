@@ -13,7 +13,7 @@ from app.schema.graph.response import (
     GraphEdgeResponse,
     GraphResponse,
 )
-from app.schema.openai.keyword import KeywordExtractResult
+from app.schema.generation.keyword import KeywordExtractResult
 
 logger = get_logger(__name__)
 
