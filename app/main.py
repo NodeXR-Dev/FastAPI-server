@@ -9,6 +9,8 @@ from app.service.utterance.embedding_service import get_embedding_model
 from app.api.utterance import router as utterance_router
 from app.api.room import router as room_router
 from app.api.feature import router as feature_router
+from app.api.ws_room_event import router as ws_room_event_router
+from app.api.generation import router as generation_router
 
 from app.core.response.exceptions import (
     BaseCustomException,
@@ -59,6 +61,14 @@ app.include_router(
     prefix="/api",
 )
 
+app.include_router(
+    ws_room_event_router,
+    prefix="/ws"
+)
+app.include_router(
+    generation_router,
+    prefix="/api"
+)
 
 # =========================
 # Exception Handler

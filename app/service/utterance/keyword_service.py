@@ -14,7 +14,7 @@ from app.ai.prompts.keyword_prompt import (
     KEYWORD_EXTRACT_SYSTEM_PROMPT,
     build_keyword_extract_prompt,
 )
-from app.schema.openai.keyword import KeywordExtractResult
+from app.schema.generation.keyword import KeywordExtractResult
 
 logger = get_logger(__name__)
 
