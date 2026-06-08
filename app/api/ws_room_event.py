@@ -228,9 +228,6 @@ async def _handle_graph_interaction(
         event.event_type,
     )
 
-    # 성공 응답 없음.
-    # Photon이 조작 UI 동기화를 담당한다.
-
 
 async def _handle_utterance_create(
     *,
