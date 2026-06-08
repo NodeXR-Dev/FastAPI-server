@@ -1,7 +1,6 @@
 from pydantic import BaseModel, Field
 
 from app.core.validators import NotBlankStr
-from app.model.enum import NodeType
 
 
 class ExtractedNode(BaseModel):

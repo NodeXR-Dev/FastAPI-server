@@ -1,5 +1,3 @@
-# app/api/routes/generation.py
-
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks
@@ -9,20 +7,17 @@ from app.core.response.response import success_response
 from app.core.response.code import ResponseCode
 from app.websocket.connection_manager import room_ws_manager
 
-from app.schema.generation.generation import (
+from app.schema.generation.generation_request import (
     Generate2DRequest,
     Generate3DRequest,
-    GenerationAcceptedResult,
 )
-from app.schema.generation.ws_generation import (
+from app.schema.generation.ws_event_generation_payload import (
     Image2DAssetPayload,
-    Image2DGeneratedWSEvent,
-    Image2DGenerationFailedWSEvent,
     Model3DAssetPayload,
+)
+from app.schema.websocket.ws_event import (
+    Image2DGeneratedWSEvent,
     Model3DGeneratedWSEvent,
-    Model3DGenerationFailedWSEvent,
-    GeneratedAssetEventPayload,
-    GenerationFailedPayload,
 )
 
 from app.service.generation.image_2d_generation_service import Image2DGenerationService
