@@ -45,10 +45,11 @@ class RoomConnectionManager:
 
     async def connect(
         self,
+        *,
         room_id: UUID,
         websocket: WebSocket,
         user_id: UUID | None = None,
-    ):
+    ) -> None:
         """
         Unity Client가 WebSocket에 접속했을 때 호출한다.
         """

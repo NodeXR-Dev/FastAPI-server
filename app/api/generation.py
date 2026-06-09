@@ -5,7 +5,7 @@ from fastapi import APIRouter, BackgroundTasks
 from app.core.logger import get_logger
 from app.core.response.response import success_response
 from app.core.response.code import ResponseCode
-from app.websocket.connection_manager import room_ws_manager
+from app.service.websocket.connection_manager import room_ws_manager
 
 from app.schema.generation.generation_request import (
     Generate2DRequest,

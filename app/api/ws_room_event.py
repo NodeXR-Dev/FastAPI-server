@@ -17,7 +17,7 @@ from app.schema.websocket.ws_event import (
     WSConnectSuccessResponse,
     WSConnectSuccessResult,
 )
-from app.websocket.connection_manager import room_ws_manager
+from app.service.websocket.connection_manager import room_ws_manager
 
 from app.service.utterance.auto_utterance_service import AutoUtteranceService
 from app.service.graph.graph_interaction_service import GraphInteractionService
@@ -37,13 +37,19 @@ GRAPH_INTERACTION_EVENTS = {
 }
 
 
-@router.websocket("/ws/rooms/{room_id}/event")
+@router.websocket("/rooms/{room_id}/event")
 async def room_event_websocket(
     websocket: WebSocket,
     room_id: UUID,
     user_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
+    logger.info(
+        "[ws_route_entered] room_id=%s | user_id=%s",
+        room_id,
+        user_id,
+    )
+    
     await room_ws_manager.connect(
         room_id=room_id,
         websocket=websocket,
