@@ -13,9 +13,11 @@ class ResponseCode(str, Enum):
     # Utterance
     # =========================
     BTUTT200 = "BTUTT200"   # 발화 처리 성공
+    
     BTUTT400 = "BTUTT400"   # 발화 요청값 오류
     BTUTT404 = "BTUTT404"   # 발화 관련 리소스 없음
     BTUTT500 = "BTUTT500"   # 발화 처리 서버 오류
+    
     UTT404 = "UTT404"       # 발화 객체 없음
     
     # =========================
@@ -47,6 +49,22 @@ class ResponseCode(str, Enum):
     FEATURE400 = "FEATURE400"  # 잘못된 기능 요청
     FEATURE404 = "FEATURE404"  # 기능 없음
     
+    # =========================
+    # Guide
+    # =========================
+    GUIDE400 = "GUIDE400"    # 발화 가이드 요청값 오류
+    GUIDE500 = "GUIDE500"    # 발화 가이드 생성 오류
+    
+    # =========================
+    # WebSocket
+    # =========================
+    WS200 = "WS200"          # 웹소켓 연결 성공
+    WS400 = "WS400"          # 웹소켓 요청 형식 오류
+    WS404 = "WS404"          # 지원하지 않는 웹소켓 이벤트
+    WS409 = "WS409"          # 웹소켓 room_id 불일치
+    WS500 = "WS500"          # 웹소켓 서버 오류
+    
+    
 RESPONSE_MESSAGES = {
     ResponseCode.BTUTT200: "버튼 조작 발화 처리 성공",
     ResponseCode.BTUTT400: "발화 요청값이 올바르지 않습니다.",
@@ -72,6 +90,15 @@ RESPONSE_MESSAGES = {
     ResponseCode.FEATURE203: "기능 목록 조회 성공", 
     ResponseCode.FEATURE400: "잘못된 기능 요청입니다.",
     ResponseCode.FEATURE404: "기능을 찾을 수 없습니다.",
+    
+    ResponseCode.GUIDE400: "발화 가이드 요청값이 올바르지 않습니다.",
+    ResponseCode.GUIDE500: "발화 가이드 생성 중 서버 오류가 발생했습니다.",
+    
+    ResponseCode.WS200: "회의실 웹소켓 연결 성공",
+    ResponseCode.WS400: "WebSocket 요청 형식이 올바르지 않습니다.",
+    ResponseCode.WS404: "지원하지 않는 WebSocket 이벤트입니다.",
+    ResponseCode.WS409: "URL의 room_id와 요청 body의 room_id가 일치하지 않습니다.",
+    ResponseCode.WS500: "WebSocket 이벤트 처리 중 서버 오류가 발생했습니다.",
 }
 
 

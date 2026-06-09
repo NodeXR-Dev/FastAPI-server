@@ -13,7 +13,7 @@ from app.schema.graph.response import (
     GraphEdgeResponse,
     GraphResponse,
 )
-from app.schema.generation.keyword import KeywordExtractResult
+from app.schema.generation.node_keyword_response import KeywordExtractResult
 
 logger = get_logger(__name__)
 

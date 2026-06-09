@@ -1,5 +1,3 @@
-# app/models/graph.py
-
 import uuid
 
 from sqlalchemy import (
@@ -84,6 +82,11 @@ class Node(Base):
     position_x: Mapped[float | None] = mapped_column(Float)
     position_y: Mapped[float | None] = mapped_column(Float)
     position_z: Mapped[float | None] = mapped_column(Float)
+    
+    deleted_at: Mapped[object | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     sub_graph: Mapped["SubGraph | None"] = relationship(
         back_populates="nodes",
@@ -143,6 +146,11 @@ class Edge(Base):
     )
 
     label: Mapped[str] = mapped_column(String, nullable=False)
+    
+    deleted_at: Mapped[object | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     sub_graph: Mapped["SubGraph | None"] = relationship(
         back_populates="edges",
