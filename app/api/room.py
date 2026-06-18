@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.response.response import success_response
 from app.core.response.code import ResponseCode
 from app.db.session import get_db
-from app.schema.room.request import CreateRoomRequest, EnterRoomRequest
+from app.schema.room.request import CreateRoomRequest, EnterRoomRequest, ExitRoomRequest
 from app.service.room.room_service import RoomService
 
 router = APIRouter(
@@ -29,7 +29,6 @@ def create_room(
 
     return success_response(
         code=ResponseCode.ROOM200,
-        message="회의실 생성 성공",
         result=result,
     )
 
@@ -42,7 +41,6 @@ def get_room_list(
 
     return success_response(
         code=ResponseCode.ROOM201,
-        message="회의실 목록 조회 성공",
         result=result,
     )
 
@@ -59,7 +57,6 @@ def get_room_info(
 
     return success_response(
         code=ResponseCode.ROOM202,
-        message="회의실 상세 정보 조회 성공",
         result=result,
     )
 
@@ -77,12 +74,25 @@ def enter_room(
     if is_reenter:
         return success_response(
             code=ResponseCode.ROOM204,
-            message="회의실 재입장 성공",
             result=result,
         )
 
     return success_response(
         code=ResponseCode.ROOM203,
-        message="회의실 최초 입장 성공",
         result=result,
+    )
+
+@router.patch("/exit")
+def exit_room(
+    request: ExitRoomRequest,
+    db: Session = Depends(get_db),
+):
+    result = room_service.exit_room(
+        request=request,
+        db=db
+    )
+    
+    return success_response(
+        code=ResponseCode.ROOM205,
+        result=result
     )

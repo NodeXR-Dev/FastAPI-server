@@ -20,3 +20,7 @@ class EnterRoomRequest(BaseModel):
     room_id: UUID
     nickname: NotBlankStr
     password: NotBlankStr
+
+class ExitRoomRequest(BaseModel):
+    room_id: UUID
+    nickname: NotBlankStr
