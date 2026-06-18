@@ -2,9 +2,10 @@
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.model.enum import RoomMemberState
 from app.model.room import Room, RoomMember, User
 
 
@@ -63,3 +64,18 @@ class RoomRepository:
             .options(selectinload(RoomMember.user))
         )
         return db.scalar(stmt)
+    
+    def count_joined_members(
+        self,
+        db: Session,
+        room_id: UUID,
+    ) -> int:
+        statement = (
+            select(func.count(RoomMember.user_id))
+            .where(
+                RoomMember.room_id == room_id,
+                RoomMember.state == RoomMemberState.JOINED,
+            )
+        )
+
+        return db.scalar(statement) or 0

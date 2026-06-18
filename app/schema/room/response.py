@@ -44,3 +44,7 @@ class RoomInfoResult(BaseModel):
 class EnterRoomResult(BaseModel):
     room_id: UUID
     user_id: UUID
+
+class ExitRoomResult(BaseModel):
+    room_id: UUID
+    user_id: UUID

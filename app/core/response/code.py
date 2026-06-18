@@ -33,10 +33,12 @@ class ResponseCode(str, Enum):
     ROOM202 = "ROOM202" # 회의실 상세 정보 조회 성공
     ROOM203 = "ROOM203" # 회의실 최초 입장 성공
     ROOM204 = "ROOM204" # 회의실 재입장 성공
+    ROOM205 = "ROON205" # 회의실 퇴장 성공
     
     ROOM400 = "ROOM400"  # 잘못된 회의실 요청
     ROOM401 = "ROOM401"  # 회의실 비밀번호 불일치
     ROOM404 = "ROOM404"  # 회의실 없음
+    ROOM_MEMBER404 = "ROOM_MEMBER404" # 멤버 없음
     
     # =========================
     # Feature
@@ -80,9 +82,11 @@ RESPONSE_MESSAGES = {
     ResponseCode.ROOM202: "회의실 상세 정보 조회 성공",
     ResponseCode.ROOM203: "회의실 최초 입장 성공",
     ResponseCode.ROOM204: "회의실 재입장 성공",
+    ResponseCode.ROOM205: "회의실 퇴장 성공",
     ResponseCode.ROOM400: "잘못된 회의실 요청입니다.",
     ResponseCode.ROOM401: "회의실 비밀번호가 일치하지 않습니다.",
     ResponseCode.ROOM404: "회의실을 찾을 수 없습니다.",
+    ResponseCode.ROOM_MEMBER404: "해당 회의실에 존재하지 않는 사용자입니다.",
     
     ResponseCode.FEATURE200: "기능 생성 성공",
     ResponseCode.FEATURE201: "기능 수정 성공",
