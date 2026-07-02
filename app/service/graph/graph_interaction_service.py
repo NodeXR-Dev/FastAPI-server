@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.logger import get_logger
 from app.model.graph import Node, Edge
-from app.model.enum import GraphEventType
+from app.model.enum import GraphEventType, NodeType
 from app.repository.graph_repository import GraphRepository
 
 logger = get_logger(__name__)
@@ -45,6 +45,14 @@ class GraphInteractionService:
         )
 
         try:
+            if event_type == "NODE_CREATE":
+                await self._handle_node_save(
+                    room_id=room_id,
+                    user_id=user_id,
+                    payload=payload
+                )
+                return
+            
             if event_type == "NODE_MOVE":
                 await self._handle_node_move(
                     room_id=room_id,
@@ -101,6 +109,185 @@ class GraphInteractionService:
             )
 
             raise
+    
+    async def _handle_node_save(
+        self,
+        *,
+        room_id: UUID,
+        user_id: UUID | None,
+        payload: dict,
+    ) -> None:
+        logger.info(
+            "[node_create_start] room_id=%s | user_id=%s | payload=%s",
+            room_id,
+            user_id,
+            payload,
+        )
+
+        parent_node_id = self._parse_optional_uuid_payload(
+            payload=payload,
+            key="parent_node_id",
+        )
+
+        node_text = self._get_required_str(
+            payload=payload,
+            key="node_text",
+        ).strip()
+
+        if not node_text:
+            raise ValueError("[GRAPH400] node_text must not be blank")
+
+        position = payload.get("position")
+
+        if not isinstance(position, list) or len(position) != 3:
+            raise ValueError("[GRAPH400] Field must be array of length 3: position")
+
+        try:
+            x = float(position[0])
+            y = float(position[1])
+            z = float(position[2])
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"[GRAPH400] Position values must be numbers: position={position}"
+            )
+
+        logger.info(
+            "[node_create_payload_parsed] room_id=%s | user_id=%s | parent_node_id=%s | node_text=%s | position=%s",
+            room_id,
+            user_id,
+            parent_node_id,
+            node_text,
+            [x, y, z],
+        )
+
+        edge = None
+
+        if parent_node_id is not None:
+            parent_node = self._get_active_node_or_raise(
+                room_id=room_id,
+                node_id=parent_node_id,
+            )
+
+            sub_graph_id = parent_node.sub_graph_id
+            node_type = NodeType.PROPERTY
+
+            logger.info(
+                "[node_create_parent_found] room_id=%s | parent_node_id=%s | sub_graph_id=%s",
+                room_id,
+                parent_node_id,
+                sub_graph_id,
+            )
+
+        else:
+            sub_graph = self.graph_repository.create_sub_graph(
+                db=self.db,
+                room_id=room_id,
+            )
+
+            sub_graph_id = sub_graph.sub_graph_id
+            node_type = NodeType.PART
+
+            logger.info(
+                "[node_create_sub_graph_created] room_id=%s | sub_graph_id=%s",
+                room_id,
+                sub_graph_id,
+            )
+
+        node = self.graph_repository.create_node(
+            db=self.db,
+            room_id=room_id,
+            sub_graph_id=sub_graph_id,
+            parent_node_id=parent_node_id,
+            node_text=node_text,
+            node_type=node_type,
+            position_x=x,
+            position_y=y,
+            position_z=z,
+        )
+
+        logger.info(
+            "[node_created] room_id=%s | user_id=%s | node_id=%s | parent_node_id=%s | sub_graph_id=%s | node_type=%s",
+            room_id,
+            user_id,
+            node.node_id,
+            parent_node_id,
+            sub_graph_id,
+            node_type,
+        )
+
+        if parent_node_id is not None:
+            edge = self.graph_repository.create_edge(
+                db=self.db,
+                room_id=room_id,
+                sub_graph_id=sub_graph_id,
+                from_node_id=parent_node_id,
+                to_node_id=node.node_id,
+            )
+
+            logger.info(
+                "[node_create_edge_created] room_id=%s | edge_id=%s | from_node_id=%s | to_node_id=%s",
+                room_id,
+                edge.edge_id,
+                parent_node_id,
+                node.node_id,
+            )
+
+        else:
+            logger.info(
+                "[node_create_edge_skipped] room_id=%s | node_id=%s | reason=root_node",
+                room_id,
+                node.node_id,
+            )
+
+        self.graph_repository.create_graph_event(
+            db=self.db,
+            room_id=room_id,
+            user_id=user_id,
+            event_type=GraphEventType.NODE_CREATE,
+            node_id=node.node_id,
+            edge_id=edge.edge_id if edge else None,
+            payload={
+                "interaction_type": "NODE_CREATE",
+                "parent_node_id": str(parent_node_id) if parent_node_id else None,
+                "sub_graph_id": str(sub_graph_id),
+                "node_text": node_text,
+                "position": [x, y, z],
+                "created_node_id": str(node.node_id),
+                "created_edge_id": str(edge.edge_id) if edge else None,
+            },
+        )
+
+        logger.info(
+            "[node_create_event_saved] room_id=%s | user_id=%s | node_id=%s | edge_id=%s",
+            room_id,
+            user_id,
+            node.node_id,
+            edge.edge_id if edge else None,
+        )
+
+        self.graph_repository.create_graph_snapshot_from_current_graph(
+            db=self.db,
+            room_id=room_id,
+        )
+
+        logger.info(
+            "[node_create_snapshot_saved] room_id=%s | node_id=%s",
+            room_id,
+            node.node_id,
+        )
+
+        self.db.commit()
+
+        logger.info(
+            "[node_create_saved] room_id=%s | user_id=%s | node_id=%s | parent_node_id=%s | sub_graph_id=%s | edge_id=%s | position=%s",
+            room_id,
+            user_id,
+            node.node_id,
+            parent_node_id,
+            sub_graph_id,
+            edge.edge_id if edge else None,
+            [x, y, z],
+        )
 
     # =========================
     # NODE_MOVE
@@ -526,6 +713,23 @@ class GraphInteractionService:
     # =========================
     # Payload helpers
     # =========================
+    def _parse_optional_uuid_payload(
+        self,
+        *,
+        payload: dict,
+        key: str,
+    ) -> UUID | None:
+        value = payload.get(key)
+
+        if value is None or value == "":
+            return None
+
+        try:
+            return UUID(str(value))
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"[GRAPH400] Invalid UUID field: {key}={payload.get(key)}"
+            )
 
     def _parse_uuid_payload(
         self,

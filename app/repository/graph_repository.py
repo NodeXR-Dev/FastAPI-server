@@ -12,7 +12,6 @@ from app.schema.graph.response import GraphResponse
 
 
 class GraphRepository:
-
     def save_graph_from_response(
         self,
         db: Session,
@@ -209,6 +208,50 @@ class GraphRepository:
             )
             .first()
         )
+    
+    def create_sub_graph(
+        self,
+        *,
+        db: Session,
+        room_id: UUID,
+    ) -> SubGraph:
+        sub_graph = SubGraph(
+            room_id=room_id,
+        )
+
+        db.add(sub_graph)
+        db.flush()
+
+        return sub_graph
+    
+    def create_node(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        sub_graph_id: UUID | None,
+        parent_node_id: UUID | None,
+        node_text: str,
+        node_type,
+        position_x: float | None = None,
+        position_y: float | None = None,
+        position_z: float | None = None,
+    ) -> Node:
+        node = Node(
+            room_id=room_id,
+            sub_graph_id=sub_graph_id,
+            parent_node_id=parent_node_id,
+            node_type=node_type,
+            node_text=node_text,
+            position_x=position_x,
+            position_y=position_y,
+            position_z=position_z,
+        )
+
+        db.add(node)
+        db.flush()
+
+        return node
 
     def update_node_position(
         self,

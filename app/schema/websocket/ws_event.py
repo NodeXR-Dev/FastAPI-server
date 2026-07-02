@@ -12,7 +12,7 @@ from app.schema.generation.ws_event_generation_payload import (
 )
 from app.schema.graph.response import NodeGraphResponse
 from app.schema.graph.ws_event_edge_payload import EdgeCreatePayload, EdgeDeletePayload
-from app.schema.graph.ws_event_node_payload import NodeDeletePayload, NodeMovePayload, NodeUpdatePayload
+from app.schema.graph.ws_event_node_payload import NodeCreatePayload, NodeDeletePayload, NodeMovePayload, NodeUpdatePayload
 from app.schema.guide.ws_event_guide_payload import AgentGuidePayload
 from app.schema.utterance.ws_event_utterance_payload import AutoUtterancePayload
 
@@ -62,6 +62,9 @@ class AutoUtteranceWSEvent(WSEvent):
     event_type: Literal["UTTERANCE_CREATE"] = "UTTERANCE_CREATE"
     payload: AutoUtterancePayload
 
+class NodeCreateWSEvent(WSEvent):
+    event_type: Literal["NODE_CREATE"] = "NODE_CREATE"
+    payload: NodeCreatePayload
 
 class NodeUpdateWSEvent(WSEvent):
     event_type: Literal["NODE_TEXT_UPDATE"] = "NODE_TEXT_UPDATE"
