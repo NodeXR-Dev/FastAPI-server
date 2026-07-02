@@ -223,6 +223,32 @@ class RoomConnectionManager:
             message.get("event_type"),
             receiver_count,
         )
+        
+    def register(
+        self,
+        *,
+        room_id: UUID,
+        websocket: WebSocket,
+        user_id: UUID | None = None,
+    ) -> None:
+        """
+        이미 accept된 WebSocket을 room에 등록한다.
+        """
+        room_key = str(room_id)
+
+        self.active_connections[room_key].append(
+            ClientConnection(
+                websocket=websocket,
+                user_id=user_id,
+            )
+        )
+
+        logger.info(
+            "[ws_register] room_id=%s | user_id=%s | active_count=%d",
+            room_id,
+            user_id,
+            len(self.active_connections[room_key]),
+        )
 
 
 room_ws_manager = RoomConnectionManager()

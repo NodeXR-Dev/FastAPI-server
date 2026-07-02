@@ -4,6 +4,5 @@ from app.core.validators import NotBlankStr
 
 
 class AutoUtterancePayload(BaseModel):
-    user_id: UUID
     utterance: NotBlankStr
     

@@ -1,3 +1,4 @@
+from datetime import datetime
 import json
 from uuid import UUID
 
@@ -239,6 +240,56 @@ class GraphRepository:
     ) -> Node:
         node.deleted_at = deleted_at
         return node
+    
+    def soft_delete_nodes(
+        self,
+        *,
+        nodes: list[Node],
+        deleted_at: datetime,
+    ) -> None:
+        """
+        여러 노드를 soft delete한다.
+        """
+        for node in nodes:
+            node.deleted_at = deleted_at
+    
+    def find_active_child_nodes_recursively(
+        self,
+        *,
+        db: Session,
+        room_id: UUID,
+        parent_node_id: UUID,
+    ) -> list[Node]:
+        """
+        특정 부모 노드의 모든 active 자식 노드를 재귀적으로 조회한다.
+        - 직접 자식
+        - 자식의 자식
+        - 그 이하 descendant 전체
+        """
+        children = (
+            db.query(Node)
+            .filter(
+                Node.room_id == room_id,
+                Node.parent_node_id == parent_node_id,
+                Node.deleted_at.is_(None),
+            )
+            .all()
+        )
+
+        descendants: list[Node] = []
+
+        for child in children:
+            descendants.append(child)
+
+            child_descendants = self.find_active_child_nodes_recursively(
+                db=db,
+                room_id=room_id,
+                parent_node_id=child.node_id,
+            )
+
+            descendants.extend(child_descendants)
+
+        return descendants
 
     def find_active_child_nodes(
         self,
@@ -277,6 +328,31 @@ class GraphRepository:
             )
             .first()
         )
+    
+    def find_active_edges_connected_to_nodes(
+        self,
+        *,
+        db: Session,
+        room_id: UUID,
+        node_ids: list[UUID],
+    ) -> list[Edge]:
+        """
+        여러 노드 중 하나라도 연결된 active edge를 조회한다.
+        기존 find_active_edges_connected_to_node()를 재사용한다.
+        """
+        edge_map: dict[UUID, Edge] = {}
+
+        for node_id in node_ids:
+            connected_edges = self.find_active_edges_connected_to_node(
+                db=db,
+                room_id=room_id,
+                node_id=node_id,
+            )
+
+            for edge in connected_edges:
+                edge_map[edge.edge_id] = edge
+
+        return list(edge_map.values())
 
     def find_active_edge_between_nodes(
         self,
@@ -325,14 +401,12 @@ class GraphRepository:
         sub_graph_id: UUID | None,
         from_node_id: UUID,
         to_node_id: UUID,
-        label: str,
     ) -> Edge:
         edge = Edge(
             room_id=room_id,
             sub_graph_id=sub_graph_id,
             from_node_id=from_node_id,
             to_node_id=to_node_id,
-            label=label,
         )
 
         db.add(edge)

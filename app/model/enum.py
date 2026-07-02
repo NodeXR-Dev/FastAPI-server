@@ -1,5 +1,3 @@
-# app/models/enums.py
-
 import enum
 
 
@@ -83,12 +81,12 @@ class AssetType(str, enum.Enum):
 
 
 class GraphEventType(str, enum.Enum):
-    NODE_CREATED = "NODE_CREATED"
-    NODE_UPDATED = "NODE_UPDATED"
-    NODE_DELETED = "NODE_DELETED"
-    EDGE_CREATED = "EDGE_CREATED"
-    EDGE_UPDATED = "EDGE_UPDATED"
-    EDGE_DELETED = "EDGE_DELETED"
+    NODE_CREATE = "NODE_CREATE"
+    NODE_TEXT_UPDATE = "NODE_TEXT_UPDATE"
+    NODE_DELETE = "NODE_DELETE"
+    NODE_MOVE = "NODE_MOVE"
+    EDGE_CREATE = "EDGE_CREATE"
+    EDGE_DELETE = "EDGE_DELETE"
 
 
 class AlertType(str, enum.Enum):

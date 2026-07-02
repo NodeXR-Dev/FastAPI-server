@@ -10,3 +10,6 @@ class NodeUpdatePayload(BaseModel):
 class NodeMovePayload(BaseModel):
     node_id: UUID
     position: list[float] = Field(default_factory=list)
+
+class NodeDeletePayload(BaseModel):
+    node_id: UUID

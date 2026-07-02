@@ -603,7 +603,7 @@ VALUES
     '16161616-1616-1616-1616-161616160001',
     NULL,
     '24242424-2424-2424-2424-242424240001',
-    'NODE_CREATED',
+    'NODE_CREATE',
     '{"source":"seed","node_text":"의자"}',
     NOW()
   ),
@@ -614,7 +614,7 @@ VALUES
     '16161616-1616-1616-1616-161616160003',
     NULL,
     '24242424-2424-2424-2424-242424240003',
-    'NODE_UPDATED',
+    'NODE_UPDATE',
     '{"source":"seed","target_scope":"All","design_dimension":"material"}',
     NOW()
   )

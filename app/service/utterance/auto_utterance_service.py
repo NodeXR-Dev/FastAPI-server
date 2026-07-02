@@ -27,7 +27,6 @@ class AutoUtteranceService:
         *,
         room_id: UUID,
         user_id: UUID | None,
-        request_id: UUID | None,
         payload: dict,
     ) -> list[dict]:
         utterance = payload["utterance"]
@@ -58,7 +57,6 @@ class AutoUtteranceService:
                 "event_type": "UTTERANCE_CREATED",
                 "room_id": room_id,
                 "user_id": user_id,
-                "request_id": request_id,
                 "payload": {
                     "utterance_id": utterance_id,
                     "utterance": utterance,

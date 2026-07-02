@@ -1,5 +1,3 @@
-# app/model/__init__.py
-
 from app.db.base import Base
 
 from app.model.room import (

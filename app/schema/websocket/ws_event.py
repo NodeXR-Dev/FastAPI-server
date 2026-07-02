@@ -11,8 +11,8 @@ from app.schema.generation.ws_event_generation_payload import (
     Model3DAssetPayload,
 )
 from app.schema.graph.response import NodeGraphResponse
-from app.schema.graph.ws_event_edge_payload import EdgeCreatePayload
-from app.schema.graph.ws_event_node_payload import NodeMovePayload, NodeUpdatePayload
+from app.schema.graph.ws_event_edge_payload import EdgeCreatePayload, EdgeDeletePayload
+from app.schema.graph.ws_event_node_payload import NodeDeletePayload, NodeMovePayload, NodeUpdatePayload
 from app.schema.guide.ws_event_guide_payload import AgentGuidePayload
 from app.schema.utterance.ws_event_utterance_payload import AutoUtterancePayload
 
@@ -20,6 +20,7 @@ from app.schema.utterance.ws_event_utterance_payload import AutoUtterancePayload
 class WSEvent(BaseModel):
     event_type: NotBlankStr
     room_id: UUID
+    user_id: UUID | None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -69,6 +70,7 @@ class NodeUpdateWSEvent(WSEvent):
 
 class NodeDeleteWSEvent(WSEvent):
     event_type: Literal["NODE_DELETE"] = "NODE_DELETE"
+    payload: NodeDeletePayload
 
 
 class NodeMoveWSEvent(WSEvent):
@@ -83,6 +85,7 @@ class EdgeCreateWSEvent(WSEvent):
 
 class EdgeDeleteWSEvent(WSEvent):
     event_type: Literal["EDGE_DELETE"] = "EDGE_DELETE"
+    payload: EdgeDeletePayload
 
 
 class GraphUpdateWSEvent(WSEvent):
