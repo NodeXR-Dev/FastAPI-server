@@ -145,7 +145,7 @@ class Edge(Base):
         nullable=False,
     )
 
-    label: Mapped[str] = mapped_column(String, nullable=False)
+    label: Mapped[str] = mapped_column(String, nullable=True)
     
     deleted_at: Mapped[object | None] = mapped_column(
         DateTime(timezone=True),
@@ -309,7 +309,6 @@ class Feature(Base):
         nullable=False,
     )
 
-    # DBML의 feqture_text는 오타로 보고 feature_text로 수정
     feature_text: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (

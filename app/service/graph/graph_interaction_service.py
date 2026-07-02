@@ -1,5 +1,3 @@
-# app/service/graph/graph_interaction_service.py
-
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -38,14 +36,12 @@ class GraphInteractionService:
         room_id: UUID,
         user_id: UUID | None,
         payload: dict,
-        request_id: UUID | None = None,
     ) -> None:
         logger.info(
-            "[graph_interaction] event_type=%s | room_id=%s | user_id=%s | request_id=%s",
+            "[graph_interaction] event_type=%s | room_id=%s | user_id=%s",
             event_type,
             room_id,
             user_id,
-            request_id,
         )
 
         try:
@@ -53,7 +49,6 @@ class GraphInteractionService:
                 await self._handle_node_move(
                     room_id=room_id,
                     user_id=user_id,
-                    request_id=request_id,
                     payload=payload,
                 )
                 return
@@ -62,7 +57,6 @@ class GraphInteractionService:
                 await self._handle_node_text_update(
                     room_id=room_id,
                     user_id=user_id,
-                    request_id=request_id,
                     payload=payload,
                 )
                 return
@@ -71,7 +65,6 @@ class GraphInteractionService:
                 await self._handle_node_delete(
                     room_id=room_id,
                     user_id=user_id,
-                    request_id=request_id,
                     payload=payload,
                 )
                 return
@@ -80,7 +73,6 @@ class GraphInteractionService:
                 await self._handle_edge_create(
                     room_id=room_id,
                     user_id=user_id,
-                    request_id=request_id,
                     payload=payload,
                 )
                 return
@@ -89,7 +81,6 @@ class GraphInteractionService:
                 await self._handle_edge_delete(
                     room_id=room_id,
                     user_id=user_id,
-                    request_id=request_id,
                     payload=payload,
                 )
                 return
@@ -102,11 +93,10 @@ class GraphInteractionService:
             self.db.rollback()
 
             logger.exception(
-                "[graph_interaction_failed] event_type=%s | room_id=%s | user_id=%s | request_id=%s | payload=%s",
+                "[graph_interaction_failed] event_type=%s | room_id=%s | user_id=%s | payload=%s",
                 event_type,
                 room_id,
                 user_id,
-                request_id,
                 payload,
             )
 
@@ -121,7 +111,6 @@ class GraphInteractionService:
         *,
         room_id: UUID,
         user_id: UUID | None,
-        request_id: UUID | None,
         payload: dict,
     ) -> None:
         node_id = self._parse_uuid_payload(
@@ -161,10 +150,9 @@ class GraphInteractionService:
             room_id=room_id,
             user_id=user_id,
             node_id=node.node_id,
-            event_type=GraphEventType.NODE_UPDATED,
+            event_type=GraphEventType.NODE_MOVE,
             payload={
                 "interaction_type": "NODE_MOVE",
-                "request_id": str(request_id) if request_id else None,
                 "node_id": str(node.node_id),
                 "before_position": before_position,
                 "after_position": {
@@ -195,7 +183,6 @@ class GraphInteractionService:
         *,
         room_id: UUID,
         user_id: UUID | None,
-        request_id: UUID | None,
         payload: dict,
     ) -> None:
         node_id = self._parse_uuid_payload(
@@ -228,10 +215,9 @@ class GraphInteractionService:
             room_id=room_id,
             user_id=user_id,
             node_id=node.node_id,
-            event_type=GraphEventType.NODE_UPDATED,
+            event_type=GraphEventType.NODE_TEXT_UPDATE,
             payload={
                 "interaction_type": "NODE_TEXT_UPDATE",
-                "request_id": str(request_id) if request_id else None,
                 "node_id": str(node.node_id),
                 "before_text": before_text,
                 "after_text": text,
@@ -261,7 +247,6 @@ class GraphInteractionService:
         *,
         room_id: UUID,
         user_id: UUID | None,
-        request_id: UUID | None,
         payload: dict,
     ) -> None:
         node_id = self._parse_uuid_payload(
@@ -276,14 +261,30 @@ class GraphInteractionService:
 
         deleted_at = datetime.now(timezone.utc)
 
-        connected_edges = self.graph_repository.find_active_edges_connected_to_node(
+        child_nodes = self.graph_repository.find_active_child_nodes_recursively(
             db=self.db,
             room_id=room_id,
-            node_id=node_id,
+            parent_node_id=node.node_id,
         )
 
-        self.graph_repository.soft_delete_node(
-            node=node,
+        nodes_to_delete = [
+            node,
+            *child_nodes,
+        ]
+
+        node_ids_to_delete = [
+            target_node.node_id
+            for target_node in nodes_to_delete
+        ]
+
+        connected_edges = self.graph_repository.find_active_edges_connected_to_nodes(
+            db=self.db,
+            room_id=room_id,
+            node_ids=node_ids_to_delete,
+        )
+
+        self.graph_repository.soft_delete_nodes(
+            nodes=nodes_to_delete,
             deleted_at=deleted_at,
         )
 
@@ -297,11 +298,18 @@ class GraphInteractionService:
             room_id=room_id,
             user_id=user_id,
             node_id=node.node_id,
-            event_type=GraphEventType.NODE_DELETED,
+            event_type=GraphEventType.NODE_DELETE,
             payload={
                 "interaction_type": "NODE_DELETE",
-                "request_id": str(request_id) if request_id else None,
                 "node_id": str(node.node_id),
+                "deleted_child_node_ids": [
+                    str(child_node.node_id)
+                    for child_node in child_nodes
+                ],
+                "deleted_node_ids": [
+                    str(target_node.node_id)
+                    for target_node in nodes_to_delete
+                ],
                 "deleted_edge_ids": [
                     str(edge.edge_id)
                     for edge in connected_edges
@@ -317,10 +325,11 @@ class GraphInteractionService:
         self.db.commit()
 
         logger.info(
-            "[node_delete_saved] room_id=%s | user_id=%s | node_id=%s | deleted_edges=%s",
+            "[node_delete_saved] room_id=%s | user_id=%s | node_id=%s | deleted_child_nodes=%s | deleted_edges=%s",
             room_id,
             user_id,
             node_id,
+            len(child_nodes),
             len(connected_edges),
         )
 
@@ -333,7 +342,6 @@ class GraphInteractionService:
         *,
         room_id: UUID,
         user_id: UUID | None,
-        request_id: UUID | None,
         payload: dict,
     ) -> None:
         from_node_id = self._parse_uuid_payload(
@@ -345,8 +353,6 @@ class GraphInteractionService:
             payload=payload,
             key="to_node_id",
         )
-
-        label = str(payload.get("label") or "").strip()
 
         if from_node_id == to_node_id:
             raise ValueError(
@@ -386,7 +392,6 @@ class GraphInteractionService:
             sub_graph_id=from_node.sub_graph_id,
             from_node_id=from_node_id,
             to_node_id=to_node_id,
-            label=label,
         )
 
         self.graph_repository.create_graph_event(
@@ -394,14 +399,12 @@ class GraphInteractionService:
             room_id=room_id,
             user_id=user_id,
             edge_id=edge.edge_id,
-            event_type=GraphEventType.EDGE_CREATED,
+            event_type=GraphEventType.EDGE_CREATE,
             payload={
                 "interaction_type": "EDGE_CREATE",
-                "request_id": str(request_id) if request_id else None,
                 "edge_id": str(edge.edge_id),
                 "from_node_id": str(from_node_id),
                 "to_node_id": str(to_node_id),
-                "label": label,
             },
         )
 
@@ -413,13 +416,12 @@ class GraphInteractionService:
         self.db.commit()
 
         logger.info(
-            "[edge_create_saved] room_id=%s | user_id=%s | edge_id=%s | from_node_id=%s | to_node_id=%s | label=%s",
+            "[edge_create_saved] room_id=%s | user_id=%s | edge_id=%s | from_node_id=%s | to_node_id=%s",
             room_id,
             user_id,
             edge.edge_id,
             from_node_id,
             to_node_id,
-            label,
         )
 
     # =========================
@@ -431,7 +433,6 @@ class GraphInteractionService:
         *,
         room_id: UUID,
         user_id: UUID | None,
-        request_id: UUID | None,
         payload: dict,
     ) -> None:
         edge_id = self._parse_uuid_payload(
@@ -456,10 +457,9 @@ class GraphInteractionService:
             room_id=room_id,
             user_id=user_id,
             edge_id=edge.edge_id,
-            event_type=GraphEventType.EDGE_DELETED,
+            event_type=GraphEventType.EDGE_DELETE,
             payload={
                 "interaction_type": "EDGE_DELETE",
-                "request_id": str(request_id) if request_id else None,
                 "edge_id": str(edge.edge_id),
                 "from_node_id": str(edge.from_node_id),
                 "to_node_id": str(edge.to_node_id),
