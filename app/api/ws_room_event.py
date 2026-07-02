@@ -23,6 +23,7 @@ router = APIRouter(
 
 
 GRAPH_INTERACTION_EVENTS = {
+    "NODE_CREATE",
     "NODE_MOVE",
     "NODE_TEXT_UPDATE",
     "NODE_DELETE",
@@ -44,12 +45,12 @@ async def room_event_websocket(
 
     try:
         while True:
-            start_time = time.perf_counter()
             raw_data = None
             db: Session | None = None
 
             try:
                 raw_data = await websocket.receive_json()
+                start_time = time.perf_counter()
                 event = WSEvent.model_validate(raw_data)
 
             except WebSocketDisconnect:

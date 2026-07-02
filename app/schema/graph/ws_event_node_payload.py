@@ -2,6 +2,9 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 from app.core.validators import NotBlankStr
 
+class NodeCreatePayload(BaseModel):
+    node_text: NotBlankStr
+    parent_node_id: UUID
 
 class NodeUpdatePayload(BaseModel):
     node_id: UUID
