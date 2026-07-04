@@ -7,10 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.core.logger import get_logger
 from app.core.response.code import ResponseCode, get_message
-from app.core.response.ws_response import send_ws_success
 from app.db.session import SessionLocal
 from app.schema.websocket.ws_event import WSEvent
 from app.service.agent.agent_guide_service import AgentGuideService
+from app.service.generation.image_2d_generation_service import Image2DGenerationService
 from app.service.graph.graph_interaction_service import GraphInteractionService
 from app.service.utterance.auto_utterance_service import AutoUtteranceService
 from app.service.websocket.connection_manager import room_ws_manager
@@ -236,6 +236,13 @@ async def _route_ws_event(
             user_id=user_id,
         )
         return
+    
+    if event.event_type == "2D_GENERATED":
+        await _handle_2d_generate(
+            websocket=websocket,
+            db=db,
+            event=event,
+        )
 
     if event.event_type == "AGENT_GUIDE":
         await _handle_agent_guide(
@@ -245,6 +252,8 @@ async def _route_ws_event(
             user_id=user_id,
         )
         return
+    
+    
 
     await _send_ws_error(
         websocket=websocket,
@@ -299,6 +308,15 @@ async def _handle_utterance_create(
             room_id=event.room_id,
             ws_event=ws_event,
         )
+
+async def _handle_2d_generate(
+    *,
+    websocket: WebSocket,
+    db: Session,
+    event: WSEvent
+):
+    service = Image2DGenerationService(db)
+    
 
 
 async def _handle_agent_guide(

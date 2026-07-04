@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 
+from app.core.startup import bootstrap_infrastructure
 from app.service.utterance.embedding_service import get_embedding_model
 
 from app.api.utterance import router as utterance_router
@@ -29,6 +30,7 @@ load_dotenv()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 서버 시작 시 실행
+    bootstrap_infrastructure()
     get_embedding_model()
 
     yield

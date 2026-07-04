@@ -7,6 +7,7 @@ from app.core.validators import NotBlankStr
 from app.core.response.code import ResponseCode, get_message
 
 from app.schema.generation.ws_event_generation_payload import (
+    GenerationFailedPayload,
     Image2DAssetPayload,
     Model3DAssetPayload,
 )
@@ -47,6 +48,9 @@ class WSErrorWSEvent(WSEvent):
     event_type: Literal["ERROR"] = "ERROR"
     payload: WSErrorPayload
 
+class Image2DGenerationFailedWSEvent(WSEvent):
+    event_type: Literal["2D_GENERATION_FAILED"] = "2D_GENERATION_FAILED"
+    payload: GenerationFailedPayload
 
 class Image2DGeneratedWSEvent(WSEvent):
     event_type: Literal["2D_GENERATED"] = "2D_GENERATED"

@@ -5,8 +5,11 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.logger import get_logger
 from app.model.enum import RoomMemberState
 from app.model.room import Room, RoomMember, User
+
+logger = get_logger(__name__)
 
 
 class RoomRepository:
@@ -79,3 +82,30 @@ class RoomRepository:
         )
 
         return db.scalar(statement) or 0
+    def find_room_topic(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+    ) -> str:
+        logger.info(
+            "[find_room_topic_started] room_id=%s",
+            room_id,
+        )
+
+        room = (
+            db.query(Room)
+            .filter(Room.room_id == room_id)
+            .first()
+        )
+
+        if room is None:
+            raise ValueError(f"회의실을 찾을 수 없습니다. room_id={room_id}")
+
+        topic = room.topic or ""
+
+        logger.info(
+            "[find_room_topic_completed] room_id=%s | topic=%s",
+            room_id,
+            topic,
+        )

@@ -1,5 +1,3 @@
-# app/models/asset.py
-
 import uuid
 
 from sqlalchemy import (
