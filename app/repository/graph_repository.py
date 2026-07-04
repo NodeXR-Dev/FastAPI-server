@@ -542,3 +542,54 @@ class GraphRepository:
         db.flush()
 
         return graph_snapshot
+    
+    # =========================
+    # 2D Generation Prompt
+    # =========================
+
+    def find_active_ancestor_chain_to_root(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        node_id: UUID,
+    ) -> list[Node]:
+        """
+        node_id에서 시작해서 parent_node_id를 따라 root node까지 올라간다.
+        반환 순서는 root -> target node.
+        """
+        current = self.find_active_node_by_id(
+            db=db,
+            room_id=room_id,
+            node_id=node_id,
+        )
+
+        if current is None:
+            raise ValueError(f"활성 노드를 찾을 수 없습니다. node_id={node_id}")
+
+        chain: list[Node] = []
+        visited_node_ids: set[UUID] = set()
+
+        while current is not None:
+            if current.node_id in visited_node_ids:
+                raise ValueError(
+                    f"노드 부모 체인에서 cycle이 감지되었습니다. node_id={current.node_id}"
+                )
+
+            visited_node_ids.add(current.node_id)
+            chain.append(current)
+
+            if current.parent_node_id is None:
+                break
+
+            current = self.find_active_node_by_id(
+                db=db,
+                room_id=room_id,
+                node_id=current.parent_node_id,
+            )
+
+            if current is None:
+                break
+
+        chain.reverse()
+        return chain

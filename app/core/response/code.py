@@ -66,6 +66,12 @@ class ResponseCode(str, Enum):
     WS409 = "WS409"          # 웹소켓 room_id 불일치
     WS500 = "WS500"          # 웹소켓 서버 오류
     
+    # =========================
+    # 2D Image
+    # =========================
+    IMG202 = "IMG202"        # 이미지 요청 성공
+    IMG500 = "IMG500"
+    
     
 RESPONSE_MESSAGES = {
     ResponseCode.BTUTT200: "버튼 조작 발화 처리 성공",
@@ -103,6 +109,9 @@ RESPONSE_MESSAGES = {
     ResponseCode.WS404: "지원하지 않는 WebSocket 이벤트입니다.",
     ResponseCode.WS409: "URL의 room_id와 요청 body의 room_id가 일치하지 않습니다.",
     ResponseCode.WS500: "WebSocket 이벤트 처리 중 서버 오류가 발생했습니다.",
+    
+    ResponseCode.IMG202: "2D 이미지 생성 요청이 접수되었습니다.",
+    ResponseCode.IMG500: "2D 이미지 생성에 실패했습니다.",
 }
 
 

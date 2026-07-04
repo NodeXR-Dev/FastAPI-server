@@ -12,18 +12,6 @@ logger = get_logger(__name__)
 
 
 class GraphInteractionService:
-    """
-    노드/엣지 조작 이벤트 처리 서비스.
-
-    정책:
-    - 성공 시 WS 응답 없음
-    - 실패 시 exception 발생
-    - router에서 exception을 잡아 요청자에게 ERROR 전송
-
-    현재 에러 처리 방식:
-    - custom exception은 만들지 않음
-    - ValueError 메시지 앞에 [GRAPH400], [NODE404] 같은 에러 코드 문자열을 붙임
-    """
 
     def __init__(self, db: Session):
         self.db = db

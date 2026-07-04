@@ -18,6 +18,7 @@ google-genai
 openai
 sentence-transformers
 transformers
+pillow
 
 minio
 httpx

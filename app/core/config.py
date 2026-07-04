@@ -16,10 +16,14 @@ class Settings(BaseSettings):
     MINIO_ENDPOINT: str
     MINIO_ACCESS_KEY: str
     MINIO_SECRET_KEY: str
-    MINIO_BUCKET: str
-    MINIO_USE_SSL: bool = False
+    MINIO_BUCKET_2D_ASSETS: str = "nodexr-2d-assets"
+    MINIO_SECURE: bool = False
+    MINIO_PUBLIC_BASE_URL: str = "http://localhost:9000"
 
+    OPENAI_API_KEY: str
+    OPENAI_PROMPT_MODEL: str = "gpt-4.1-mini"
     GEMINI_API_KEY: str | None = None
+    GEMINI_MODEL_NAME: str = "gemini-3.1-flash-image"
     MESHY_API_KEY: str | None = None
     
     EMBEDDING_DIM: int = 1536
