@@ -20,7 +20,7 @@ class MinioAssetStorage:
         self,
         *,
         room_id: UUID,
-        graph_snapshot_id: UUID,
+        graph_snapshot_id: UUID | None=None,
         image_bytes: bytes,
         mime_type: str,
     ) -> StoredObjectInfo:

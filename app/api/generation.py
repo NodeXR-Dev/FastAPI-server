@@ -11,6 +11,7 @@ from app.repository.graph_repository import GraphRepository
 from app.schema.generation.generation_request import (
     Connection2D,
     Generate2DRequest,
+    Generate2DFeatureRequest,
     Generate3DRequest,
 )
 from app.schema.generation.ws_event_generation_payload import (
@@ -23,6 +24,7 @@ from app.schema.websocket.ws_event import (
     Image2DGenerationFailedWSEvent,
 )
 from app.service.generation.image_2d_generation_service import Image2DGenerationService
+from app.service.generation.image_2d_feature_generation_service import Image2DFeatureGenerationService
 from app.service.generation.model_3d_generation_service import Model3DGenerationService
 from app.service.websocket.connection_manager import room_ws_manager
 
@@ -32,7 +34,6 @@ router = APIRouter(
     tags=["2D"]
 )
 
-
 @router.post("/2d/generate")
 async def request_2d_generate(
     request: Generate2DRequest,
@@ -40,8 +41,9 @@ async def request_2d_generate(
     db: Session = Depends(get_db),
 ):
     logger.info(
-        "[2d_generate_requested] room_id=%s | connection_count=%s",
+        "[2d_generate_requested] room_id=%s | user_id=%s | connection_count=%s",
         request.room_id,
+        request.user_id,
         len(request.connections),
     )
 
@@ -65,13 +67,15 @@ async def request_2d_generate(
         background_tasks.add_task(
             _run_2d_generation_task,
             room_id=request.room_id,
+            user_id=request.user_id,
             graph_snapshot_id=graph_snapshot.graph_snapshot_id,
             connections=request.connections,
         )
 
         logger.info(
-            "[2d_generate_task_registered] room_id=%s | graph_snapshot_id=%s",
+            "[2d_generate_task_registered] room_id=%s | user_id=%s | graph_snapshot_id=%s",
             request.room_id,
+            request.user_id,
             graph_snapshot.graph_snapshot_id,
         )
 
@@ -91,16 +95,123 @@ async def request_2d_generate(
 
         raise
 
+@router.post("/2d/generate/feature")
+async def request_2d_generate_by_feature(
+    request: Generate2DFeatureRequest,
+    background_tasks: BackgroundTasks,
+):
+    logger.info(
+        "[2d_feature_generate_requested] room_id=%s | user_id=%s",
+        request.room_id,
+        request.user_id,
+    )
+
+    background_tasks.add_task(
+        _run_2d_feature_generation_task,
+        room_id=request.room_id,
+        user_id=request.user_id,
+    )
+
+    logger.info(
+        "[2d_feature_generate_task_registered] room_id=%s | user_id=%s",
+        request.room_id,
+        request.user_id,
+    )
+
+    return success_response(
+        code=ResponseCode.IMG202,
+        message="Feature 기반 2D 이미지 생성 요청이 접수되었습니다.",
+    )
+    
+async def _run_2d_feature_generation_task(
+    *,
+    room_id: UUID,
+    user_id: UUID,
+) -> None:
+    logger.info(
+        "[2d_feature_generation_task_started] room_id=%s | user_id=%s",
+        room_id,
+        user_id
+    )
+
+    db = SessionLocal()
+
+    try:
+        service = Image2DFeatureGenerationService(
+            db=db,
+        )
+
+        result = await service.generate(
+            room_id=room_id,
+            user_id=user_id,
+        )
+
+        ws_event = Image2DGeneratedWSEvent(
+            room_id=room_id,
+            user_id=user_id,
+            payload=Image2DAssetPayload(
+                asset_id=result.asset_id,
+                mime_type=result.mime_type,
+                width=result.width,
+                height=result.height,
+                img_url=result.img_url,
+            ),
+        )
+
+        await room_ws_manager.broadcast_to_room(
+            room_id=room_id,
+            message=ws_event.model_dump(mode="json"),
+        )
+
+        logger.info(
+            "[2d_feature_generation_task_completed] room_id=%s | asset_id=%s",
+            room_id,
+            result.asset_id,
+        )
+
+    except Exception as e:
+        db.rollback()
+
+        logger.exception(
+            "[2d_feature_generation_task_failed] room_id=%s | error=%s",
+            room_id,
+            str(e),
+        )
+
+        ws_event = Image2DGenerationFailedWSEvent(
+            room_id=room_id,
+            user_id=user_id,
+            payload=GenerationFailedPayload(
+                code=ResponseCode.IMG500.value,
+                message="Feature 기반 2D 이미지 생성에 실패했습니다.",
+                reason=str(e),
+            ),
+        )
+
+        await room_ws_manager.broadcast_to_room(
+            room_id=room_id,
+            message=ws_event.model_dump(mode="json"),
+        )
+
+    finally:
+        db.close()
+
+        logger.info(
+            "[2d_feature_generation_task_db_closed] room_id=%s",
+            room_id,
+        )
 
 async def _run_2d_generation_task(
     *,
     room_id: UUID,
+    user_id: UUID,
     graph_snapshot_id: UUID,
     connections: list[Connection2D],
 ) -> None:
     logger.info(
-        "[2d_generation_task_started] room_id=%s | graph_snapshot_id=%s | connection_count=%s",
+        "[2d_generation_task_started] room_id=%s | user_id=%s | graph_snapshot_id=%s | connection_count=%s",
         room_id,
+        user_id,
         graph_snapshot_id,
         len(connections),
     )
@@ -114,13 +225,14 @@ async def _run_2d_generation_task(
 
         result = await service.generate(
             room_id=room_id,
+            user_id=user_id,
             graph_snapshot_id=graph_snapshot_id,
             connections=connections,
         )
 
         ws_event = Image2DGeneratedWSEvent(
             room_id=room_id,
-            user_id=None,
+            user_id=user_id,
             payload=Image2DAssetPayload(
                 asset_id=result.asset_id,
                 mime_type=result.mime_type,
@@ -152,7 +264,7 @@ async def _run_2d_generation_task(
 
         ws_event = Image2DGenerationFailedWSEvent(
             room_id=room_id,
-            user_id=None,
+            user_id=user_id,
             payload=GenerationFailedPayload(
                 code=ResponseCode.IMG500.value,
                 message="2D 이미지 생성에 실패했습니다.",

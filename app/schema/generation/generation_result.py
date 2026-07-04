@@ -75,3 +75,25 @@ class Generated2DAssetResult:
     width: int | None
     height: int | None
     img_url: str
+
+@dataclass
+class FeaturePromptContext:
+    room_id: UUID
+    topic: str
+    features: list[str] = field(default_factory=list)
+
+    def to_text(self) -> str:
+        lines: list[str] = []
+
+        lines.append("[ROOM TOPIC]")
+        lines.append(self.topic if self.topic else "(empty)")
+        lines.append("")
+
+        lines.append("[FEATURE REQUIREMENTS]")
+        if self.features:
+            for idx, feature in enumerate(self.features, start=1):
+                lines.append(f"{idx}. {feature}")
+        else:
+            lines.append("(none)")
+
+        return "\n".join(lines)

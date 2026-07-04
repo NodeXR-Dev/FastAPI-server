@@ -4,33 +4,36 @@ from sqlalchemy.orm import Session
 
 from app.core.logger import get_logger
 from app.repository.asset_repository import AssetRepository
-from app.schema.generation.generation_request import Connection2D
 from app.schema.generation.generation_result import (
     Generated2DAssetResult,
     StoredObjectInfo,
 )
+from app.service.generation.feature_prompt_context_builder import FeaturePromptContextBuilder
+from app.service.generation.feature_prompt_generation_service import FeaturePromptGenerationService
 from app.service.generation.gemini_image_client import GeminiImageClient
 from app.service.generation.minio_asset_storage import MinioAssetStorage
-from app.service.generation.prompt_context_builder import PromptContextBuilder
-from app.service.generation.prompt_generation_service import PromptGenerationService
 
 logger = get_logger(__name__)
 
 
-class Image2DGenerationService:
+class Image2DFeatureGenerationService:
     def __init__(
         self,
         *,
         db: Session,
-        prompt_context_builder: PromptContextBuilder | None = None,
-        prompt_generation_service: PromptGenerationService | None = None,
+        feature_prompt_context_builder: FeaturePromptContextBuilder | None = None,
+        feature_prompt_generation_service: FeaturePromptGenerationService | None = None,
         gemini_image_client: GeminiImageClient | None = None,
         minio_asset_storage: MinioAssetStorage | None = None,
         asset_repository: AssetRepository | None = None,
     ) -> None:
         self.db = db
-        self.prompt_context_builder = prompt_context_builder or PromptContextBuilder()
-        self.prompt_generation_service = prompt_generation_service or PromptGenerationService()
+        self.feature_prompt_context_builder = (
+            feature_prompt_context_builder or FeaturePromptContextBuilder()
+        )
+        self.feature_prompt_generation_service = (
+            feature_prompt_generation_service or FeaturePromptGenerationService()
+        )
         self.gemini_image_client = gemini_image_client or GeminiImageClient()
         self.minio_asset_storage = minio_asset_storage or MinioAssetStorage()
         self.asset_repository = asset_repository or AssetRepository()
@@ -40,27 +43,22 @@ class Image2DGenerationService:
         *,
         room_id: UUID,
         user_id: UUID,
-        graph_snapshot_id: UUID,
-        connections: list[Connection2D],
     ) -> Generated2DAssetResult:
         logger.info(
-            "[image_2d_generation_started] room_id=%s | user_id=%s | graph_snapshot_id=%s | connection_count=%s",
+            "[image_2d_feature_generation_started] room_id=%s | user_id=%s ",
             room_id,
             user_id,
-            graph_snapshot_id,
-            len(connections),
         )
 
         stored_object: StoredObjectInfo | None = None
 
         try:
-            context = self.prompt_context_builder.build(
+            context = self.feature_prompt_context_builder.build(
                 db=self.db,
                 room_id=room_id,
-                connections=connections,
             )
 
-            prompt_text = await self.prompt_generation_service.generate(
+            prompt_text = await self.feature_prompt_generation_service.generate(
                 context=context,
             )
 
@@ -70,7 +68,7 @@ class Image2DGenerationService:
 
             stored_object = self.minio_asset_storage.upload_generated_image(
                 room_id=room_id,
-                graph_snapshot_id=graph_snapshot_id,
+                graph_snapshot_id=None,
                 image_bytes=generated_image.image_bytes,
                 mime_type=generated_image.mime_type,
             )
@@ -78,7 +76,7 @@ class Image2DGenerationService:
             asset = self.asset_repository.create_2d_asset(
                 db=self.db,
                 room_id=room_id,
-                graph_snapshot_id=graph_snapshot_id,
+                graph_snapshot_id=None,
                 file_url=stored_object.public_url,
                 prompt_text=prompt_text,
             )
@@ -86,7 +84,7 @@ class Image2DGenerationService:
             self.db.commit()
 
             logger.info(
-                "[image_2d_generation_completed] room_id=%s | asset_id=%s",
+                "[image_2d_feature_generation_completed] room_id=%s | asset_id=%s",
                 room_id,
                 asset.asset_id,
             )
@@ -103,9 +101,8 @@ class Image2DGenerationService:
             self.db.rollback()
 
             logger.exception(
-                "[image_2d_generation_failed] room_id=%s | graph_snapshot_id=%s",
+                "[image_2d_feature_generation_failed] room_id=%s",
                 room_id,
-                graph_snapshot_id,
             )
 
             if stored_object is not None:
@@ -116,7 +113,7 @@ class Image2DGenerationService:
                     )
                 except Exception as cleanup_error:
                     logger.exception(
-                        "[image_2d_generation_cleanup_failed] room_id=%s | error=%s",
+                        "[image_2d_feature_generation_cleanup_failed] room_id=%s | error=%s",
                         room_id,
                         str(cleanup_error),
                     )

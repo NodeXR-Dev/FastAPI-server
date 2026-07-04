@@ -82,6 +82,7 @@ class RoomRepository:
         )
 
         return db.scalar(statement) or 0
+    
     def find_room_topic(
         self,
         db: Session,
@@ -109,3 +110,4 @@ class RoomRepository:
             room_id,
             topic,
         )
+        return topic

@@ -1,4 +1,5 @@
 import time
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -10,7 +11,6 @@ from app.core.response.code import ResponseCode, get_message
 from app.db.session import SessionLocal
 from app.schema.websocket.ws_event import WSEvent
 from app.service.agent.agent_guide_service import AgentGuideService
-from app.service.generation.image_2d_generation_service import Image2DGenerationService
 from app.service.graph.graph_interaction_service import GraphInteractionService
 from app.service.utterance.auto_utterance_service import AutoUtteranceService
 from app.service.websocket.connection_manager import room_ws_manager
@@ -20,6 +20,12 @@ logger = get_logger(__name__)
 router = APIRouter(
     tags=["WebSocket"],
 )
+
+
+CONNECT_EVENTS = {
+    "WS_CONNECT",
+    "ROOM_JOIN",
+}
 
 
 GRAPH_INTERACTION_EVENTS = {
@@ -90,9 +96,14 @@ async def room_event_websocket(
                 )
                 continue
 
+            event_user_id = _extract_connect_user_id(event)
+
+            # =========================
+            # First message = room registration
+            # =========================
             if connected_room_id is None:
                 connected_room_id = event.room_id
-                connected_user_id = event.user_id
+                connected_user_id = event_user_id
 
                 room_ws_manager.register(
                     room_id=connected_room_id,
@@ -100,25 +111,26 @@ async def room_event_websocket(
                     user_id=connected_user_id,
                 )
 
-                await room_ws_manager.send_personal_message(
-                    websocket,
-                    {
-                        "event_type": "WS_CONNECT",
-                        "room_id": str(connected_room_id),
-                        "payload": {
-                            "user_id": str(connected_user_id)
-                            if connected_user_id
-                            else None
-                        },
-                    },
+                await _send_ws_connect_success(
+                    websocket=websocket,
+                    room_id=connected_room_id,
+                    user_id=connected_user_id,
                 )
 
                 logger.info(
-                    "[ws_room_event] connect_done | room_id=%s | user_id=%s",
+                    "[ws_room_event] connect_done | room_id=%s | user_id=%s | first_event_type=%s",
                     connected_room_id,
                     connected_user_id,
+                    event.event_type,
                 )
 
+                # WS_CONNECT / ROOM_JOIN은 등록용 이벤트이므로 여기서 종료
+                if event.event_type in CONNECT_EVENTS:
+                    continue
+
+            # =========================
+            # Prevent room switching
+            # =========================
             if event.room_id != connected_room_id:
                 await _send_ws_error(
                     websocket=websocket,
@@ -129,10 +141,13 @@ async def room_event_websocket(
                 )
                 continue
 
+            # =========================
+            # Prevent user switching
+            # =========================
             if (
                 connected_user_id is not None
-                and event.user_id is not None
-                and event.user_id != connected_user_id
+                and event_user_id is not None
+                and event_user_id != connected_user_id
             ):
                 await _send_ws_error(
                     websocket=websocket,
@@ -143,7 +158,17 @@ async def room_event_websocket(
                 )
                 continue
 
-            current_user_id = event.user_id or connected_user_id
+            current_user_id = event_user_id or connected_user_id
+
+            # 이미 연결된 상태에서 WS_CONNECT / ROOM_JOIN이 다시 들어오면 무시
+            if event.event_type in CONNECT_EVENTS:
+                logger.info(
+                    "[ws_connect_event_ignored] room_id=%s | user_id=%s | event_type=%s",
+                    event.room_id,
+                    current_user_id,
+                    event.event_type,
+                )
+                continue
 
             logger.info(
                 "[ws_event_received] room_id=%s | user_id=%s | event_type=%s",
@@ -165,16 +190,18 @@ async def room_event_websocket(
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
 
                 logger.info(
-                    "[ws_event_done] room_id=%s | event_type=%s | elapsed_ms=%.2f",
+                    "[ws_event_done] room_id=%s | user_id=%s | event_type=%s | elapsed_ms=%.2f",
                     event.room_id,
+                    current_user_id,
                     event.event_type,
                     elapsed_ms,
                 )
 
             except Exception as e:
                 logger.exception(
-                    "[ws_event_failed] room_id=%s | event_type=%s | error=%s",
+                    "[ws_event_failed] room_id=%s | user_id=%s | event_type=%s | error=%s",
                     event.room_id,
+                    current_user_id,
                     event.event_type,
                     str(e),
                 )
@@ -193,7 +220,10 @@ async def room_event_websocket(
 
     except WebSocketDisconnect:
         if connected_room_id is not None:
-            room_ws_manager.disconnect(connected_room_id, websocket)
+            room_ws_manager.disconnect(
+                connected_room_id,
+                websocket,
+            )
 
         logger.info(
             "[ws_closed] room_id=%s | user_id=%s",
@@ -203,7 +233,10 @@ async def room_event_websocket(
 
     except Exception as e:
         if connected_room_id is not None:
-            room_ws_manager.disconnect(connected_room_id, websocket)
+            room_ws_manager.disconnect(
+                connected_room_id,
+                websocket,
+            )
 
         logger.exception(
             "[ws_unexpected_closed] room_id=%s | user_id=%s | error=%s",
@@ -212,6 +245,7 @@ async def room_event_websocket(
             str(e),
         )
 
+
 async def _route_ws_event(
     *,
     websocket: WebSocket,
@@ -219,6 +253,15 @@ async def _route_ws_event(
     event: WSEvent,
     user_id: UUID | None,
 ):
+    if event.event_type in CONNECT_EVENTS:
+        logger.info(
+            "[ws_connect_event_ignored_in_router] room_id=%s | user_id=%s | event_type=%s",
+            event.room_id,
+            user_id,
+            event.event_type,
+        )
+        return
+
     if event.event_type == "UTTERANCE_CREATE":
         await _handle_utterance_create(
             websocket=websocket,
@@ -236,13 +279,6 @@ async def _route_ws_event(
             user_id=user_id,
         )
         return
-    
-    if event.event_type == "2D_GENERATED":
-        await _handle_2d_generate(
-            websocket=websocket,
-            db=db,
-            event=event,
-        )
 
     if event.event_type == "AGENT_GUIDE":
         await _handle_agent_guide(
@@ -252,8 +288,6 @@ async def _route_ws_event(
             user_id=user_id,
         )
         return
-    
-    
 
     await _send_ws_error(
         websocket=websocket,
@@ -277,7 +311,7 @@ async def _handle_graph_interaction(
         event_type=event.event_type,
         room_id=event.room_id,
         user_id=user_id,
-        payload=event.payload,
+        payload=_payload_to_dict(event.payload),
     )
 
     logger.info(
@@ -300,7 +334,7 @@ async def _handle_utterance_create(
     ws_events = await service.handle_auto_utterance(
         room_id=event.room_id,
         user_id=user_id,
-        payload=event.payload,
+        payload=_payload_to_dict(event.payload),
     )
 
     for ws_event in ws_events:
@@ -308,15 +342,6 @@ async def _handle_utterance_create(
             room_id=event.room_id,
             ws_event=ws_event,
         )
-
-async def _handle_2d_generate(
-    *,
-    websocket: WebSocket,
-    db: Session,
-    event: WSEvent
-):
-    service = Image2DGenerationService(db)
-    
 
 
 async def _handle_agent_guide(
@@ -326,7 +351,8 @@ async def _handle_agent_guide(
     event: WSEvent,
     user_id: UUID | None,
 ):
-    guide_type = event.payload.get("guide_type")
+    payload = _payload_to_dict(event.payload)
+    guide_type = payload.get("guide_type")
 
     if not guide_type:
         await _send_ws_error(
@@ -344,7 +370,7 @@ async def _handle_agent_guide(
         guide_type=guide_type,
         room_id=event.room_id,
         user_id=user_id,
-        payload=event.payload,
+        payload=payload,
     )
 
     await _dispatch_server_event(
@@ -356,10 +382,13 @@ async def _handle_agent_guide(
 async def _dispatch_server_event(
     *,
     room_id: UUID,
-    ws_event: dict,
+    ws_event: Any,
 ):
+    if hasattr(ws_event, "model_dump"):
+        ws_event = ws_event.model_dump(mode="json")
+
     ws_event = _stringify_uuid(ws_event)
-    event_type = ws_event.get("event_type")
+    event_type = ws_event.get("event_type") if isinstance(ws_event, dict) else None
 
     logger.info(
         "[ws_dispatch_server_event] room_id=%s | event_type=%s",
@@ -370,6 +399,27 @@ async def _dispatch_server_event(
     await room_ws_manager.broadcast_to_room(
         room_id=room_id,
         message=ws_event,
+    )
+
+
+async def _send_ws_connect_success(
+    *,
+    websocket: WebSocket,
+    room_id: UUID,
+    user_id: UUID | None,
+):
+    user_id_value = str(user_id) if user_id else None
+
+    await room_ws_manager.send_personal_message(
+        websocket,
+        {
+            "event_type": "WS_CONNECT",
+            "room_id": str(room_id),
+            "user_id": user_id_value,
+            "payload": {
+                "user_id": user_id_value,
+            },
+        },
     )
 
 
@@ -386,7 +436,7 @@ async def _send_ws_error(
         "event_type": "ERROR",
         "room_id": str(room_id) if room_id else None,
         "payload": {
-            "code": code,
+            "code": code.value,
             "message": message or get_message(code),
             "detail": detail,
             "failed_event_type": failed_event_type,
@@ -403,7 +453,8 @@ def _extract_connect_user_id(event: WSEvent) -> UUID | None:
     if event.user_id is not None:
         return event.user_id
 
-    user_id = event.payload.get("user_id")
+    payload = _payload_to_dict(event.payload)
+    user_id = payload.get("user_id")
 
     if user_id is None:
         return None
@@ -414,14 +465,27 @@ def _extract_connect_user_id(event: WSEvent) -> UUID | None:
     return UUID(str(user_id))
 
 
-def _get_raw_event_type(raw_data) -> str | None:
+def _payload_to_dict(payload: Any) -> dict:
+    if payload is None:
+        return {}
+
+    if isinstance(payload, dict):
+        return payload
+
+    if hasattr(payload, "model_dump"):
+        return payload.model_dump(mode="json")
+
+    return dict(payload)
+
+
+def _get_raw_event_type(raw_data: Any) -> str | None:
     if isinstance(raw_data, dict):
         return raw_data.get("event_type")
 
     return None
 
 
-def _stringify_uuid(data):
+def _stringify_uuid(data: Any):
     if isinstance(data, dict):
         return {k: _stringify_uuid(v) for k, v in data.items()}
 

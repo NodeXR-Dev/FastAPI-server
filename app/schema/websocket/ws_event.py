@@ -21,7 +21,7 @@ from app.schema.utterance.ws_event_utterance_payload import AutoUtterancePayload
 class WSEvent(BaseModel):
     event_type: NotBlankStr
     room_id: UUID
-    user_id: UUID | None
+    user_id: UUID | None=None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 

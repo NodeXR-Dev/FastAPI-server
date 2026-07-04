@@ -15,7 +15,7 @@ class AssetRepository:
         db: Session,
         *,
         room_id: UUID,
-        graph_snapshot_id: UUID,
+        graph_snapshot_id: UUID | None=None,
         file_url: str,
         prompt_text: str,
     ) -> Asset:
