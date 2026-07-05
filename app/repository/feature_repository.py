@@ -3,7 +3,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.core.logger import get_logger
-from app.model.graph import Feature
+from app.model.feature import Feature
 from app.model.room import Room
 
 logger = get_logger(__name__)

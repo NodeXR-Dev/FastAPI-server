@@ -4,16 +4,15 @@ from app.model.room import (
     User,
     Room,
     RoomMember,
-    Topic,
-    Utterance,
 )
 
 from app.model.memory import (
+    Topic,
+    Utterance,
     SemanticMemory,
     DesignFact,
     DesignFactLink,
     DesignFactUtteranceLink,
-    AgentAlert,
 )
 
 from app.model.graph import (
@@ -23,10 +22,8 @@ from app.model.graph import (
     NodeUtteranceLink,
     GraphEvent,
     GraphSnapshot,
-    Feature,
 )
-
-from app.model.asset import (
-    Asset,
-    Reference,
-)
+from app.model.feature import Feature
+from app.model.asset import Asset
+from app.model.reference import Reference
+from app.model.agent import AgentAlert

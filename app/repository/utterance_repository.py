@@ -1,5 +1,3 @@
-# app/repository/utterance_repository.py
-
 from sqlite3 import IntegrityError
 import uuid
 import time
@@ -12,7 +10,7 @@ from app.core.performance import performance_tracker
 from app.core.response.code import ResponseCode
 from app.core.response.exceptions import BadRequestException, NotFoundException, ServerException
 from app.model.enum import UtteranceState
-from app.model.room import Utterance
+from app.model.memory import Utterance
 
 logger = get_logger(__name__)
 

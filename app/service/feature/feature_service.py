@@ -2,7 +2,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.model.graph import Feature
+from app.model.feature import Feature
 from app.repository.feature_repository import FeatureRepository
 from app.repository.room_repository import RoomRepository
 from app.schema.feature.request import (

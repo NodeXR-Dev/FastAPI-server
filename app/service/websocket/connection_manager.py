@@ -1,5 +1,3 @@
-# app/websocket/connection_manager.py
-
 from dataclasses import dataclass
 from collections import defaultdict
 from uuid import UUID

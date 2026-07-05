@@ -1,3 +1,4 @@
+from uuid import UUID
 import uuid
 
 from sqlalchemy import (
@@ -9,54 +10,24 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.model.enum import GraphEventType, NodeType
-
-
-class SubGraph(Base):
-    __tablename__ = "sub_graphs"
-
-    sub_graph_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-
-    room_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("rooms.room_id"),
-        nullable=False,
-    )
-
-    nodes: Mapped[list["Node"]] = relationship(
-        back_populates="sub_graph",
-    )
-
-    edges: Mapped[list["Edge"]] = relationship(
-        back_populates="sub_graph",
-    )
-
-    __table_args__ = (
-        Index("ix_sub_graphs_room_id", "room_id"),
-    )
-
+from app.model.memory import NodeUtteranceLink
 
 class Node(Base):
     __tablename__ = "nodes"
 
-    node_id: Mapped[uuid.UUID] = mapped_column(
+    node_id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
-        default=uuid.uuid4,
+        default=UUID.uuid4,
     )
 
-    room_id: Mapped[uuid.UUID] = mapped_column(
+    room_id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("rooms.room_id"),
         nullable=False,
@@ -171,42 +142,32 @@ class Edge(Base):
         Index("ix_edges_to_node_id", "to_node_id"),
     )
 
+class SubGraph(Base):
+    __tablename__ = "sub_graphs"
 
-class NodeUtteranceLink(Base):
-    __tablename__ = "node_utterance_links"
-
-    node_utterance_link_id: Mapped[uuid.UUID] = mapped_column(
+    sub_graph_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
     )
 
-    node_id: Mapped[uuid.UUID] = mapped_column(
+    room_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("nodes.node_id"),
+        ForeignKey("rooms.room_id"),
         nullable=False,
     )
 
-    utterance_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("utterances.utterance_id"),
-        nullable=False,
+    nodes: Mapped[list["Node"]] = relationship(
+        back_populates="sub_graph",
     )
 
-    node: Mapped["Node"] = relationship(
-        back_populates="utterance_links",
+    edges: Mapped[list["Edge"]] = relationship(
+        back_populates="sub_graph",
     )
 
     __table_args__ = (
-        UniqueConstraint(
-            "node_id",
-            "utterance_id",
-            name="uq_node_utterance_links_node_utterance",
-        ),
-        Index("ix_node_utterance_links_node_id", "node_id"),
-        Index("ix_node_utterance_links_utterance_id", "utterance_id"),
+        Index("ix_sub_graphs_room_id", "room_id"),
     )
-
 
 class GraphEvent(Base):
     __tablename__ = "graph_events"
@@ -265,7 +226,6 @@ class GraphEvent(Base):
         Index("ix_graph_events_created_at", "created_at"),
     )
 
-
 class GraphSnapshot(Base):
     __tablename__ = "graph_snapshots"
 
@@ -291,26 +251,4 @@ class GraphSnapshot(Base):
 
     __table_args__ = (
         Index("ix_graph_snapshots_room_id", "room_id"),
-    )
-
-
-class Feature(Base):
-    __tablename__ = "features"
-
-    feature_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-
-    room_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("rooms.room_id"),
-        nullable=False,
-    )
-
-    feature_text: Mapped[str] = mapped_column(Text, nullable=False)
-
-    __table_args__ = (
-        Index("ix_features_room_id", "room_id"),
     )
