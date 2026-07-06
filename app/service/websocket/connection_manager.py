@@ -119,7 +119,6 @@ class RoomConnectionManager:
         특정 room 안의 특정 user에게만 메시지를 보낸다.
 
         현재 최종 정책에서는 주로 ERROR fallback이나 특수한 개인 메시지에만 사용한다.
-        2D/3D/AGENT_GUIDE/GRAPH_UPDATED는 room broadcast로 보낸다.
         """
         room_key = str(room_id)
 
@@ -170,46 +169,46 @@ class RoomConnectionManager:
 
         return sent
 
-    async def broadcast_to_room(
-        self,
-        room_id: UUID,
-        message: dict,
-    ):
-        room_key = str(room_id)
+    #async def broadcast_to_room(
+    #    self,
+    #    room_id: UUID,
+    #    message: dict,
+    #):
+    #    room_key = str(room_id)
 
-        if room_key not in self.active_connections:
-            logger.info(
-                "[ws_broadcast_skip] no active clients | room_id=%s | event_type=%s",
-                room_id,
-                message.get("event_type"),
-            )
-            return
+    #    if room_key not in self.active_connections:
+    #        logger.info(
+    #            "[ws_broadcast_skip] no active clients | room_id=%s | event_type=%s",
+    #            room_id,
+    #            message.get("event_type"),
+    #        )
+    #        return
 
-        disconnected: list[ClientConnection] = []
-        receiver_count = 0
+    #    disconnected: list[ClientConnection] = []
+    #    receiver_count = 0
 
-        for conn in list(self.active_connections[room_key]):
-            try:
-                await conn.websocket.send_json(message)
-                receiver_count += 1
-            except Exception as e:
-                logger.warning(
-                    "[ws_broadcast_failed] room_id=%s | event_type=%s | error=%s",
-                    room_id,
-                    message.get("event_type"),
-                    str(e),
-                )
-                disconnected.append(conn)
+    #        try:
+    #    for conn in list(self.active_connections[room_key]):
+    #            await conn.websocket.send_json(message)
+    #            receiver_count += 1
+    #            logger.warning(
+    #        except Exception as e:
+    #                "[ws_broadcast_failed] room_id=%s | event_type=%s | error=%s",
+    #                message.get("event_type"),
+    #                room_id,
+    #                str(e),
+    #            )
+    #            disconnected.append(conn)
+    #
+    #    for conn in disconnected:
+    #        self.disconnect(room_id, conn.websocket)
 
-        for conn in disconnected:
-            self.disconnect(room_id, conn.websocket)
-
-        logger.info(
-            "[ws_broadcast] room_id=%s | event_type=%s | receiver_count=%d",
-            room_id,
-            message.get("event_type"),
-            receiver_count,
-        )
+    #    logger.info(
+    #        "[ws_broadcast] room_id=%s | event_type=%s | receiver_count=%d",
+    #        room_id,
+    #        message.get("event_type"),
+    #        receiver_count,
+    #    )
         
     def register(
         self,

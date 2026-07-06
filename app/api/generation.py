@@ -156,8 +156,14 @@ async def _run_2d_feature_generation_task(
             ),
         )
 
-        await room_ws_manager.broadcast_to_room(
+        #await room_ws_manager.broadcast_to_room(
+        #    room_id=room_id,
+        #    message=ws_event.model_dump(mode="json"),
+        #)
+        
+        await room_ws_manager.send_to_user(
             room_id=room_id,
+            user_id=user_id,
             message=ws_event.model_dump(mode="json"),
         )
 
