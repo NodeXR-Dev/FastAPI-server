@@ -6,7 +6,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.model.graph import SubGraph, Node, Edge, GraphSnapshot, GraphEvent
-from app.model.graph import NodeUtteranceLink
+from app.model.memory import NodeUtteranceLink
 from app.model.enum import GraphEventType
 from app.schema.graph.response import GraphResponse
 

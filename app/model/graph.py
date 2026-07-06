@@ -1,4 +1,4 @@
-from uuid import UUID
+from sqlalchemy.dialects.postgresql import UUID
 import uuid
 
 from sqlalchemy import (
@@ -16,7 +16,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.model.enum import GraphEventType, NodeType
-from app.model.memory import NodeUtteranceLink
 
 class Node(Base):
     __tablename__ = "nodes"
@@ -24,7 +23,7 @@ class Node(Base):
     node_id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
-        default=UUID.uuid4,
+        default=uuid.uuid4,
     )
 
     room_id: Mapped[UUID] = mapped_column(
@@ -73,8 +72,8 @@ class Node(Base):
     )
 
     utterance_links: Mapped[list["NodeUtteranceLink"]] = relationship(
+        "NodeUtteranceLink",
         back_populates="node",
-        cascade="all, delete-orphan",
     )
 
     __table_args__ = (

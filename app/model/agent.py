@@ -2,22 +2,24 @@ import uuid
 
 from sqlalchemy import UUID, DateTime, Enum, ForeignKey, Index, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.dialects.postgresql import UUID
 
 from app.db.base import Base
 from app.model.enum import AlertStatus, AlertType
+from sqlalchemy.dialects.postgresql import UUID
 
 
 class AgentAlert(Base):
     __tablename__ = "agent_alerts"
 
     agent_alert_id: Mapped[uuid.UUID] = mapped_column(
-        uuid.UUID(as_uuid=True),
+        UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
     )
 
     room_id: Mapped[uuid.UUID] = mapped_column(
-        uuid.UUID(as_uuid=True),
+        UUID(as_uuid=True),
         ForeignKey("rooms.room_id"),
         nullable=False,
     )

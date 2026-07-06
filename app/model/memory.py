@@ -25,7 +25,6 @@ from app.model.enum import (
     TopicStatus,
     UtteranceState,
 )
-from app.model.graph import Node
 from app.model.room import Room, User
 
 

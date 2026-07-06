@@ -9,6 +9,7 @@ from app.model.room import (
 from app.model.memory import (
     Topic,
     Utterance,
+    NodeUtteranceLink,
     SemanticMemory,
     DesignFact,
     DesignFactLink,
@@ -19,7 +20,6 @@ from app.model.graph import (
     SubGraph,
     Node,
     Edge,
-    NodeUtteranceLink,
     GraphEvent,
     GraphSnapshot,
 )
