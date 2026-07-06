@@ -20,18 +20,18 @@ class GraphRepository:
         graph: GraphResponse,
     ):
         # 1. 이번 요청으로 생긴 sub_graph 생성
-        sub_graph = SubGraph(
+        sub_graph = self.create_sub_graph(
+            db=db,
             room_id=room_id,
         )
-        db.add(sub_graph)
-        db.flush()
 
         node_id_map = {}
         saved_nodes = []
 
         # 2. 신규 노드 저장
         for node_response in graph.nodes:
-            node = Node(
+            node = self.create_node(
+                db=db,
                 room_id=room_id,
                 sub_graph_id=sub_graph.sub_graph_id,
                 parent_node_id=node_response.parent_node_id,
@@ -41,9 +41,6 @@ class GraphRepository:
                 position_y=node_response.position[1] if len(node_response.position) > 1 else None,
                 position_z=node_response.position[2] if len(node_response.position) > 2 else None,
             )
-
-            db.add(node)
-            db.flush()
 
             # GraphBuildService에서 만든 임시 node_id → DB에 저장된 실제 node_id 매핑
             node_id_map[node_response.node_id] = node.node_id
@@ -69,7 +66,8 @@ class GraphRepository:
                 edge_response.to_node_id,
             )
 
-            edge = Edge(
+            edge = self.create_edge(
+                db=db,
                 room_id=room_id,
                 sub_graph_id=sub_graph.sub_graph_id,
                 from_node_id=from_node_id,
@@ -77,38 +75,19 @@ class GraphRepository:
                 label=edge_response.label,
             )
 
-            db.add(edge)
-            db.flush()
-
             saved_edges.append(edge)
 
-        # 4. 전체 그래프 조회
+        # 4. 전체 그래프 기준 snapshot 생성
+        graph_snapshot = self.create_graph_snapshot_from_current_graph(
+            db=db,
+            room_id=room_id,
+        )
+
+        # 5. 반환용 전체 그래프 조회
         all_nodes, all_edges = self.find_graph_by_room_id(
             db=db,
             room_id=room_id,
         )
-
-        # 5. 다음 graph version 계산
-        next_version = self.get_next_graph_version(
-            db=db,
-            room_id=room_id,
-        )
-
-        # 6. 전체 그래프 기준 snapshot 생성
-        snapshot_data = self.build_snapshot_data(
-            version=next_version,
-            nodes=all_nodes,
-            edges=all_edges,
-        )
-
-        graph_snapshot = GraphSnapshot(
-            room_id=room_id,
-            snapshot_data=json.dumps(snapshot_data, ensure_ascii=False),
-            version=next_version,
-        )
-
-        db.add(graph_snapshot)
-        db.flush()
 
         return sub_graph, graph_snapshot, saved_nodes, saved_edges, all_nodes, all_edges
 
@@ -140,6 +119,7 @@ class GraphRepository:
         )
 
         return nodes, edges
+
     def get_next_graph_version(
         self,
         db: Session,
@@ -192,6 +172,7 @@ class GraphRepository:
                 for edge in edges
             ],
         }
+
     def find_active_node_by_id(
         self,
         db: Session,
@@ -208,7 +189,7 @@ class GraphRepository:
             )
             .first()
         )
-    
+
     def create_sub_graph(
         self,
         *,
@@ -223,7 +204,7 @@ class GraphRepository:
         db.flush()
 
         return sub_graph
-    
+
     def create_node(
         self,
         db: Session,
@@ -283,7 +264,7 @@ class GraphRepository:
     ) -> Node:
         node.deleted_at = deleted_at
         return node
-    
+
     def soft_delete_nodes(
         self,
         *,
@@ -294,8 +275,11 @@ class GraphRepository:
         여러 노드를 soft delete한다.
         """
         for node in nodes:
-            node.deleted_at = deleted_at
-    
+            self.soft_delete_node(
+                node=node,
+                deleted_at=deleted_at,
+            )
+
     def find_active_child_nodes_recursively(
         self,
         *,
@@ -309,14 +293,10 @@ class GraphRepository:
         - 자식의 자식
         - 그 이하 descendant 전체
         """
-        children = (
-            db.query(Node)
-            .filter(
-                Node.room_id == room_id,
-                Node.parent_node_id == parent_node_id,
-                Node.deleted_at.is_(None),
-            )
-            .all()
+        children = self.find_active_child_nodes(
+            db=db,
+            room_id=room_id,
+            parent_node_id=parent_node_id,
         )
 
         descendants: list[Node] = []
@@ -371,7 +351,7 @@ class GraphRepository:
             )
             .first()
         )
-    
+
     def find_active_edges_connected_to_nodes(
         self,
         *,
@@ -444,12 +424,14 @@ class GraphRepository:
         sub_graph_id: UUID | None,
         from_node_id: UUID,
         to_node_id: UUID,
+        label: str | None = None,
     ) -> Edge:
         edge = Edge(
             room_id=room_id,
             sub_graph_id=sub_graph_id,
             from_node_id=from_node_id,
             to_node_id=to_node_id,
+            label=label,
         )
 
         db.add(edge)
@@ -473,7 +455,10 @@ class GraphRepository:
         deleted_at,
     ) -> list[Edge]:
         for edge in edges:
-            edge.deleted_at = deleted_at
+            self.soft_delete_edge(
+                edge=edge,
+                deleted_at=deleted_at,
+            )
 
         return edges
 
@@ -542,7 +527,7 @@ class GraphRepository:
         db.flush()
 
         return graph_snapshot
-    
+
     # =========================
     # 2D Generation Prompt
     # =========================
