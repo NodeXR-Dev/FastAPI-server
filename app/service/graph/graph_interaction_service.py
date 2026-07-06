@@ -24,7 +24,7 @@ class GraphInteractionService:
         room_id: UUID,
         user_id: UUID | None,
         payload: dict,
-    ) -> None:
+    ) -> dict:
         logger.info(
             "[graph_interaction] event_type=%s | room_id=%s | user_id=%s",
             event_type,
@@ -34,12 +34,11 @@ class GraphInteractionService:
 
         try:
             if event_type == "NODE_CREATE":
-                await self._handle_node_save(
+                return await self._handle_node_save(
                     room_id=room_id,
                     user_id=user_id,
                     payload=payload
                 )
-                return
             
             if event_type == "NODE_MOVE":
                 await self._handle_node_move(
@@ -47,7 +46,7 @@ class GraphInteractionService:
                     user_id=user_id,
                     payload=payload,
                 )
-                return
+                return None
 
             if event_type == "NODE_TEXT_UPDATE":
                 await self._handle_node_text_update(
@@ -55,7 +54,7 @@ class GraphInteractionService:
                     user_id=user_id,
                     payload=payload,
                 )
-                return
+                return None
 
             if event_type == "NODE_DELETE":
                 await self._handle_node_delete(
@@ -63,15 +62,14 @@ class GraphInteractionService:
                     user_id=user_id,
                     payload=payload,
                 )
-                return
+                return None
 
             if event_type == "EDGE_CREATE":
-                await self._handle_edge_create(
+                return await self._handle_edge_create(
                     room_id=room_id,
                     user_id=user_id,
                     payload=payload,
                 )
-                return
 
             if event_type == "EDGE_DELETE":
                 await self._handle_edge_delete(
@@ -79,7 +77,7 @@ class GraphInteractionService:
                     user_id=user_id,
                     payload=payload,
                 )
-                return
+                return None
 
             raise ValueError(
                 f"[GRAPH400] Unsupported graph interaction event_type: {event_type}"
@@ -104,7 +102,7 @@ class GraphInteractionService:
         room_id: UUID,
         user_id: UUID | None,
         payload: dict,
-    ) -> None:
+    ) -> dict:
         logger.info(
             "[node_create_start] room_id=%s | user_id=%s | payload=%s",
             room_id,
@@ -276,6 +274,11 @@ class GraphInteractionService:
             edge.edge_id if edge else None,
             [x, y, z],
         )
+        
+        return {
+            "node_id" : node.node_id,
+            "node_type" : node.node_type
+        }
 
     # =========================
     # NODE_MOVE
@@ -598,6 +601,10 @@ class GraphInteractionService:
             from_node_id,
             to_node_id,
         )
+        
+        return {
+            "edge_id" : edge.edge_id
+        }
 
     # =========================
     # EDGE_DELETE

@@ -7,10 +7,20 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.core.logger import get_logger
-from app.core.response.code import ResponseCode, get_message
-from app.db.session import SessionLocal
+from app.core.response.ws_exception_handler import handle_ws_exception
+from app.core.response.ws_exceptions import (
+    WSBadRequestException,
+    WSConflictException,
+    WSNotFoundException,
+)
+from app.core.response.ws_response import send_ws_success_to_requester
+from app.core.ws_utils import (
+    extract_user_id,
+    get_raw_event_type,
+    payload_to_dict,
+    ws_db_session,
+)
 from app.schema.websocket.ws_event import WSEvent
-from app.service.agent.agent_guide_service import AgentGuideService
 from app.service.graph.graph_interaction_service import GraphInteractionService
 from app.service.utterance.auto_utterance_service import AutoUtteranceService
 from app.service.websocket.connection_manager import room_ws_manager
@@ -22,12 +32,6 @@ router = APIRouter(
 )
 
 
-CONNECT_EVENTS = {
-    "WS_CONNECT",
-    "ROOM_JOIN",
-}
-
-
 GRAPH_INTERACTION_EVENTS = {
     "NODE_CREATE",
     "NODE_MOVE",
@@ -35,6 +39,11 @@ GRAPH_INTERACTION_EVENTS = {
     "NODE_DELETE",
     "EDGE_CREATE",
     "EDGE_DELETE",
+}
+
+ACK_REQUIRED_EVENTS = {
+    "NODE_CREATE",
+    "EDGE_CREATE",
 }
 
 
@@ -51,141 +60,66 @@ async def room_event_websocket(
 
     try:
         while True:
-            raw_data = None
-            db: Session | None = None
+            raw_data: Any = None
+            event: WSEvent | None = None
+            current_user_id: UUID | None = connected_user_id
+            start_time = time.perf_counter()
 
             try:
-                raw_data = await websocket.receive_json()
-                start_time = time.perf_counter()
+                raw_data = await _receive_ws_json(websocket)
                 event = WSEvent.model_validate(raw_data)
 
-            except WebSocketDisconnect:
-                raise
+                event_user_id = extract_user_id(event)
 
-            except ValidationError as e:
-                logger.warning(
-                    "[ws_invalid_schema] room_id=%s | user_id=%s | error=%s",
-                    connected_room_id,
-                    connected_user_id,
-                    str(e),
+                if connected_room_id is None:
+                    connected_room_id = event.room_id
+                    connected_user_id = event_user_id
+                    current_user_id = connected_user_id
+
+                    room_ws_manager.register(
+                        room_id=connected_room_id,
+                        websocket=websocket,
+                        user_id=connected_user_id,
+                    )
+
+                    logger.info(
+                        "[ws_lazy_registered] room_id=%s | user_id=%s | first_event_type=%s",
+                        connected_room_id,
+                        connected_user_id,
+                        event.event_type,
+                    )
+
+                _validate_connection_state(
+                    event=event,
+                    connected_room_id=connected_room_id,
+                    connected_user_id=connected_user_id,
+                    event_user_id=event_user_id,
                 )
 
-                await _send_ws_error(
-                    websocket=websocket,
-                    room_id=connected_room_id,
-                    failed_event_type=_get_raw_event_type(raw_data),
-                    code=ResponseCode.WS400,
-                    detail=str(e),
-                )
-                continue
-
-            except Exception as e:
-                logger.warning(
-                    "[ws_receive_failed] room_id=%s | user_id=%s | error=%s",
-                    connected_room_id,
-                    connected_user_id,
-                    str(e),
-                )
-
-                await _send_ws_error(
-                    websocket=websocket,
-                    room_id=connected_room_id,
-                    failed_event_type=_get_raw_event_type(raw_data),
-                    code=ResponseCode.WS400,
-                    detail=str(e),
-                )
-                continue
-
-            event_user_id = _extract_connect_user_id(event)
-
-            # =========================
-            # First message = room registration
-            # =========================
-            if connected_room_id is None:
-                connected_room_id = event.room_id
-                connected_user_id = event_user_id
-
-                room_ws_manager.register(
-                    room_id=connected_room_id,
-                    websocket=websocket,
-                    user_id=connected_user_id,
-                )
-
-                await _send_ws_connect_success(
-                    websocket=websocket,
-                    room_id=connected_room_id,
-                    user_id=connected_user_id,
-                )
+                current_user_id = event_user_id or connected_user_id
 
                 logger.info(
-                    "[ws_room_event] connect_done | room_id=%s | user_id=%s | first_event_type=%s",
-                    connected_room_id,
-                    connected_user_id,
-                    event.event_type,
-                )
-
-                # WS_CONNECT / ROOM_JOIN은 등록용 이벤트이므로 여기서 종료
-                if event.event_type in CONNECT_EVENTS:
-                    continue
-
-            # =========================
-            # Prevent room switching
-            # =========================
-            if event.room_id != connected_room_id:
-                await _send_ws_error(
-                    websocket=websocket,
-                    room_id=connected_room_id,
-                    failed_event_type=event.event_type,
-                    code=ResponseCode.WS409,
-                    detail="room_id cannot be changed after websocket connection",
-                )
-                continue
-
-            # =========================
-            # Prevent user switching
-            # =========================
-            if (
-                connected_user_id is not None
-                and event_user_id is not None
-                and event_user_id != connected_user_id
-            ):
-                await _send_ws_error(
-                    websocket=websocket,
-                    room_id=connected_room_id,
-                    failed_event_type=event.event_type,
-                    code=ResponseCode.WS409,
-                    detail="user_id cannot be changed after websocket connection",
-                )
-                continue
-
-            current_user_id = event_user_id or connected_user_id
-
-            # 이미 연결된 상태에서 WS_CONNECT / ROOM_JOIN이 다시 들어오면 무시
-            if event.event_type in CONNECT_EVENTS:
-                logger.info(
-                    "[ws_connect_event_ignored] room_id=%s | user_id=%s | event_type=%s",
+                    "[ws_event_received] room_id=%s | user_id=%s | event_type=%s",
                     event.room_id,
                     current_user_id,
                     event.event_type,
                 )
-                continue
 
-            logger.info(
-                "[ws_event_received] room_id=%s | user_id=%s | event_type=%s",
-                event.room_id,
-                current_user_id,
-                event.event_type,
-            )
+                with ws_db_session() as db:
+                    ack_payload, server_events = await route_ws_event(
+                        db=db,
+                        event=event,
+                        user_id=current_user_id,
+                    )
 
-            db = SessionLocal()
-
-            try:
-                await _route_ws_event(
-                    websocket=websocket,
-                    db=db,
-                    event=event,
-                    user_id=current_user_id,
-                )
+                if event.event_type in ACK_REQUIRED_EVENTS and ack_payload is not None:
+                    await send_ws_success_to_requester(
+                        websocket=websocket,
+                        event_type=event.event_type,
+                        room_id=event.room_id,
+                        user_id=current_user_id,
+                        payload=ack_payload,
+                    )
 
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
 
@@ -197,26 +131,26 @@ async def room_event_websocket(
                     elapsed_ms,
                 )
 
-            except Exception as e:
-                logger.exception(
-                    "[ws_event_failed] room_id=%s | user_id=%s | event_type=%s | error=%s",
-                    event.room_id,
-                    current_user_id,
-                    event.event_type,
-                    str(e),
-                )
+            except WebSocketDisconnect:
+                raise
 
-                await _send_ws_error(
+            except ValidationError as e:
+                await handle_ws_exception(
                     websocket=websocket,
-                    room_id=event.room_id,
-                    failed_event_type=event.event_type,
-                    code=ResponseCode.WS500,
-                    detail=str(e),
+                    exc=e,
+                    room_id=connected_room_id,
+                    user_id=current_user_id,
+                    failed_event_type=get_raw_event_type(raw_data),
                 )
 
-            finally:
-                if db is not None:
-                    db.close()
+            except Exception as e:
+                await handle_ws_exception(
+                    websocket=websocket,
+                    exc=e,
+                    room_id=connected_room_id or (event.room_id if event else None),
+                    user_id=current_user_id,
+                    failed_event_type=event.event_type if event else get_raw_event_type(raw_data),
+                )
 
     except WebSocketDisconnect:
         if connected_room_id is not None:
@@ -246,72 +180,86 @@ async def room_event_websocket(
         )
 
 
-async def _route_ws_event(
-    *,
+async def _receive_ws_json(
     websocket: WebSocket,
+) -> Any:
+    try:
+        return await websocket.receive_json()
+
+    except WebSocketDisconnect:
+        raise
+
+    except Exception as e:
+        raise WSBadRequestException(
+            detail=str(e),
+        )
+
+
+def _validate_connection_state(
+    *,
+    event: WSEvent,
+    connected_room_id: UUID,
+    connected_user_id: UUID | None,
+    event_user_id: UUID | None,
+) -> None:
+    if event.room_id != connected_room_id:
+        raise WSConflictException(
+            detail="room_id cannot be changed after websocket connection",
+            failed_event_type=event.event_type,
+        )
+
+    if (
+        connected_user_id is not None
+        and event_user_id is not None
+        and event_user_id != connected_user_id
+    ):
+        raise WSConflictException(
+            detail="user_id cannot be changed after websocket connection",
+            failed_event_type=event.event_type,
+        )
+
+
+async def route_ws_event(
+    *,
     db: Session,
     event: WSEvent,
     user_id: UUID | None,
-):
-    if event.event_type in CONNECT_EVENTS:
-        logger.info(
-            "[ws_connect_event_ignored_in_router] room_id=%s | user_id=%s | event_type=%s",
-            event.room_id,
-            user_id,
-            event.event_type,
-        )
-        return
-
+) -> tuple[dict | None, list[Any]]:
     if event.event_type == "UTTERANCE_CREATE":
-        await _handle_utterance_create(
-            websocket=websocket,
+        server_events = await handle_utterance_create(
             db=db,
             event=event,
             user_id=user_id,
         )
-        return
+        return None, server_events
 
     if event.event_type in GRAPH_INTERACTION_EVENTS:
-        await _handle_graph_interaction(
-            websocket=websocket,
+        ack_payload = await handle_graph_interaction(
             db=db,
             event=event,
             user_id=user_id,
         )
-        return
+        return ack_payload, []
 
-    if event.event_type == "AGENT_GUIDE":
-        await _handle_agent_guide(
-            websocket=websocket,
-            db=db,
-            event=event,
-            user_id=user_id,
-        )
-        return
-
-    await _send_ws_error(
-        websocket=websocket,
-        room_id=event.room_id,
-        failed_event_type=event.event_type,
-        code=ResponseCode.WS404,
+    raise WSNotFoundException(
         detail=f"unsupported event_type={event.event_type}",
+        failed_event_type=event.event_type,
     )
 
 
-async def _handle_graph_interaction(
+async def handle_graph_interaction(
     *,
-    websocket: WebSocket,
     db: Session,
     event: WSEvent,
     user_id: UUID | None,
-):
+) -> dict | None:
     service = GraphInteractionService(db)
 
-    await service.handle_graph_interaction(
+    ack_payload = await service.handle_graph_interaction(
         event_type=event.event_type,
         room_id=event.room_id,
         user_id=user_id,
-        payload=_payload_to_dict(event.payload),
+        payload=payload_to_dict(event.payload),
     )
 
     logger.info(
@@ -321,178 +269,27 @@ async def _handle_graph_interaction(
         event.event_type,
     )
 
+    return ack_payload
 
-async def _handle_utterance_create(
+
+async def handle_utterance_create(
     *,
-    websocket: WebSocket,
     db: Session,
     event: WSEvent,
     user_id: UUID | None,
-):
+) -> list[Any]:
     service = AutoUtteranceService(db)
 
     ws_events = await service.handle_auto_utterance(
         room_id=event.room_id,
         user_id=user_id,
-        payload=_payload_to_dict(event.payload),
+        payload=payload_to_dict(event.payload),
     )
-
-    for ws_event in ws_events:
-        await _dispatch_server_event(
-            room_id=event.room_id,
-            ws_event=ws_event,
-        )
-
-
-async def _handle_agent_guide(
-    *,
-    websocket: WebSocket,
-    db: Session,
-    event: WSEvent,
-    user_id: UUID | None,
-):
-    payload = _payload_to_dict(event.payload)
-    guide_type = payload.get("guide_type")
-
-    if not guide_type:
-        await _send_ws_error(
-            websocket=websocket,
-            room_id=event.room_id,
-            failed_event_type=event.event_type,
-            code=ResponseCode.GUIDE400,
-            detail="guide_type is required",
-        )
-        return
-
-    service = AgentGuideService(db)
-
-    guide_event = await service.create_guide(
-        guide_type=guide_type,
-        room_id=event.room_id,
-        user_id=user_id,
-        payload=payload,
-    )
-
-    await _dispatch_server_event(
-        room_id=event.room_id,
-        ws_event=guide_event,
-    )
-
-
-async def _dispatch_server_event(
-    *,
-    room_id: UUID,
-    ws_event: Any,
-):
-    if hasattr(ws_event, "model_dump"):
-        ws_event = ws_event.model_dump(mode="json")
-
-    ws_event = _stringify_uuid(ws_event)
-    event_type = ws_event.get("event_type") if isinstance(ws_event, dict) else None
 
     logger.info(
-        "[ws_dispatch_server_event] room_id=%s | event_type=%s",
-        room_id,
-        event_type,
+        "[utterance_saved] room_id=%s | user_id=%s",
+        event.room_id,
+        user_id,
     )
 
-    await room_ws_manager.broadcast_to_room(
-        room_id=room_id,
-        message=ws_event,
-    )
-
-
-async def _send_ws_connect_success(
-    *,
-    websocket: WebSocket,
-    room_id: UUID,
-    user_id: UUID | None,
-):
-    user_id_value = str(user_id) if user_id else None
-
-    await room_ws_manager.send_personal_message(
-        websocket,
-        {
-            "event_type": "WS_CONNECT",
-            "room_id": str(room_id),
-            "user_id": user_id_value,
-            "payload": {
-                "user_id": user_id_value,
-            },
-        },
-    )
-
-
-async def _send_ws_error(
-    *,
-    websocket: WebSocket,
-    room_id: UUID | None,
-    failed_event_type: str | None,
-    code: ResponseCode,
-    detail: str | None = None,
-    message: str | None = None,
-):
-    error_event = {
-        "event_type": "ERROR",
-        "room_id": str(room_id) if room_id else None,
-        "payload": {
-            "code": code.value,
-            "message": message or get_message(code),
-            "detail": detail,
-            "failed_event_type": failed_event_type,
-        },
-    }
-
-    await room_ws_manager.send_personal_message(
-        websocket,
-        error_event,
-    )
-
-
-def _extract_connect_user_id(event: WSEvent) -> UUID | None:
-    if event.user_id is not None:
-        return event.user_id
-
-    payload = _payload_to_dict(event.payload)
-    user_id = payload.get("user_id")
-
-    if user_id is None:
-        return None
-
-    if isinstance(user_id, UUID):
-        return user_id
-
-    return UUID(str(user_id))
-
-
-def _payload_to_dict(payload: Any) -> dict:
-    if payload is None:
-        return {}
-
-    if isinstance(payload, dict):
-        return payload
-
-    if hasattr(payload, "model_dump"):
-        return payload.model_dump(mode="json")
-
-    return dict(payload)
-
-
-def _get_raw_event_type(raw_data: Any) -> str | None:
-    if isinstance(raw_data, dict):
-        return raw_data.get("event_type")
-
-    return None
-
-
-def _stringify_uuid(data: Any):
-    if isinstance(data, dict):
-        return {k: _stringify_uuid(v) for k, v in data.items()}
-
-    if isinstance(data, list):
-        return [_stringify_uuid(v) for v in data]
-
-    if isinstance(data, UUID):
-        return str(data)
-
-    return data
+    return ws_events or []

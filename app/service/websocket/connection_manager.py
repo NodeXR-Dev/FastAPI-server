@@ -175,17 +175,6 @@ class RoomConnectionManager:
         room_id: UUID,
         message: dict,
     ):
-        """
-        같은 room에 접속한 모든 Unity Client에게 메시지를 보낸다.
-
-        최종 정책상 broadcast 대상:
-        - GRAPH_UPDATED
-        - AGENT_GUIDE
-        - 2D_GENERATED
-        - 2D_GENERATION_FAILED
-        - 3D_GENERATED
-        - 3D_GENERATION_FAILED
-        """
         room_key = str(room_id)
 
         if room_key not in self.active_connections:

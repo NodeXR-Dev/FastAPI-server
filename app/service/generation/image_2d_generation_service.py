@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.core.logger import get_logger
 from app.repository.asset_repository import AssetRepository
-from app.schema.generation.generation_request import Connection2D
+from app.schema.generation.request import Connection2D
 from app.schema.generation.generation_result import (
     Generated2DAssetResult,
     StoredObjectInfo,

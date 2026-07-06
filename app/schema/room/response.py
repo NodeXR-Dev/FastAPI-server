@@ -2,10 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel
 from uuid import UUID
-from app.core.validators import NotBlankStr
-from app.model.enum import RoomMemberRole, RoomMemberState
 
-class CreateRoomResult(BaseModel):
+class CreateRoomResponse(BaseModel):
     room_id: UUID
     room_topic: str
     password: str
@@ -18,33 +16,33 @@ class RoomUserResponse(BaseModel):
     nickname: str
 
 
-class RoomListItemResponse(BaseModel):
+class RoomListItemResult(BaseModel):
     room_id: UUID
     room_topic: str
     users: list[RoomUserResponse]
     created_at: datetime
 
 
-class RoomListResult(BaseModel):
-    rooms: list[RoomListItemResponse]
+class RoomListResponse(BaseModel):
+    rooms: list[RoomListItemResult]
 
 
-class RoomInfoUserResponse(BaseModel):
+class RoomInfoUserResult(BaseModel):
     user_id: UUID
     nickname: str
     leader: bool
 
 
-class RoomInfoResult(BaseModel):
+class RoomInfoResponse(BaseModel):
     room_id: UUID
     room_topic: str
-    users: list[RoomInfoUserResponse]
+    users: list[RoomInfoUserResult]
 
 
-class EnterRoomResult(BaseModel):
+class EnterRoomResponse(BaseModel):
     room_id: UUID
     user_id: UUID
 
-class ExitRoomResult(BaseModel):
+class ExitRoomResponse(BaseModel):
     room_id: UUID
     user_id: UUID
