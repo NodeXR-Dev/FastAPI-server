@@ -15,8 +15,3 @@ class Model3DAssetPayload(BaseModel):
     asset_id: UUID
     mime_type: str
     model_url: str
-
-class GenerationFailedPayload(BaseModel):
-    code: str
-    message: str
-    reason: str | None = None

@@ -6,7 +6,7 @@ class Connection2D(BaseModel):
     part_node_id: UUID
     node_id: UUID
     
-class Generate2DRequest(BaseModel):
+class Generate2DGraphRequest(BaseModel):
     room_id: UUID
     user_id: UUID
     connections: list[Connection2D] = Field(default_factory=list)

@@ -1,13 +1,3 @@
--- seed_elementary_making_2d_test.sql
--- NodeXR dummy data for the new service direction:
--- 초등학생 만들기 팀프로젝트 + 그래프 기반 2D 이미지 생성 테스트
--- 기준 ERD:
--- users, rooms, room_members, topics, utterances,
--- semantic_memories, design_facts, design_fact_links, design_fact_utterance_links,
--- sub_graphs, nodes, edges, node_utterance_links,
--- graph_events, graph_snapshots, agent_alerts,
--- assets, references, features
-
 BEGIN;
 
 -- =========================

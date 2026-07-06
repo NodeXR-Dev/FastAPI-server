@@ -1,133 +1,111 @@
 from typing import Any
+from uuid import UUID
 
-from fastapi import WebSocket, status
-from pydantic import ValidationError
+from fastapi import WebSocket
 
-from app.core.logger import get_logger
-from app.core.response.code import ResponseCode
-from app.core.response.exceptions import (
-    BaseCustomException,
-    BadRequestException,
-    UnauthorizedException,
-    NotFoundException,
-)
-from app.core.response.response import success_response, error_response
-
-logger = get_logger(__name__)
+from app.core.response.code import ResponseCode, get_message
+from app.service.websocket.connection_manager import room_ws_manager
 
 
-def get_ws_status_code_from_exception(exc: BaseCustomException) -> int:
-    if isinstance(exc, BadRequestException):
-        return status.HTTP_400_BAD_REQUEST
-
-    if isinstance(exc, UnauthorizedException):
-        return status.HTTP_401_UNAUTHORIZED
-
-    if isinstance(exc, NotFoundException):
-        return status.HTTP_404_NOT_FOUND
-
-    return status.HTTP_500_INTERNAL_SERVER_ERROR
-
-
-def serialize_ws_result(result: Any) -> Any:
-    if result is None:
-        return None
-
-    if hasattr(result, "model_dump"):
-        return result.model_dump(mode="json")
-
-    return result
-
-
-async def send_ws_success(
-    websocket: WebSocket,
+def ws_success_event(
     *,
+    event_type: str,
+    room_id: UUID,
+    user_id: UUID | None,
+    payload: dict[str, Any] | None = None,
+) -> dict:
+    return {
+        "event_type": event_type,
+        "room_id": str(room_id),
+        "user_id": str(user_id) if user_id else None,
+        "payload": _stringify_uuid(payload or {}),
+    }
+
+
+def ws_error_event(
+    *,
+    room_id: UUID | None,
+    user_id: UUID | None,
     code: ResponseCode,
+    failed_event_type: str | None = None,
     message: str | None = None,
-    result: Any = None,
+    detail: str | None = None,
+) -> dict:
+    payload = {
+        "code": code.value,
+        "message": message or get_message(code),
+    }
+
+    if failed_event_type is not None:
+        payload["failed_event_type"] = failed_event_type
+
+    if detail is not None:
+        payload["detail"] = detail
+
+    return {
+        "event_type": "ERROR",
+        "room_id": str(room_id) if room_id else None,
+        "user_id": str(user_id) if user_id else None,
+        "payload": payload,
+    }
+
+
+async def send_ws_success_to_requester(
+    *,
+    websocket: WebSocket,
+    event_type: str,
+    room_id: UUID,
+    user_id: UUID | None,
+    payload: dict[str, Any] | None = None,
 ) -> None:
-    await websocket.send_json(
-        success_response(
-            code=code,
-            message=message,
-            result=serialize_ws_result(result),
-        )
+    await room_ws_manager.send_personal_message(
+        websocket,
+        ws_success_event(
+            event_type=event_type,
+            room_id=room_id,
+            user_id=user_id,
+            payload=payload,
+        ),
     )
 
 
-async def send_ws_error(
-    websocket: WebSocket,
+async def send_ws_error_to_requester(
     *,
+    websocket: WebSocket,
+    room_id: UUID | None,
+    user_id: UUID | None,
     code: ResponseCode,
+    failed_event_type: str | None = None,
     message: str | None = None,
-    result: Any = None,
+    detail: str | None = None,
 ) -> None:
-    await websocket.send_json(
-        error_response(
+    await room_ws_manager.send_personal_message(
+        websocket,
+        ws_error_event(
+            room_id=room_id,
+            user_id=user_id,
             code=code,
+            failed_event_type=failed_event_type,
             message=message,
-            result=serialize_ws_result(result),
-        )
+            detail=detail,
+        ),
     )
 
 
-async def handle_ws_custom_exception(
-    websocket: WebSocket,
-    *,
-    exc: BaseCustomException,
-    path: str,
-) -> None:
-    status_code = get_ws_status_code_from_exception(exc)
+def _stringify_uuid(data: Any) -> Any:
+    if isinstance(data, dict):
+        return {
+            key: _stringify_uuid(value)
+            for key, value in data.items()
+        }
 
-    logger.warning(
-        "[WSCustomException] path=%s | status=%s | code=%s | message=%s",
-        path,
-        status_code,
-        exc.code,
-        exc.message,
-    )
+    if isinstance(data, list):
+        return [
+            _stringify_uuid(value)
+            for value in data
+        ]
 
-    await send_ws_error(
-        websocket,
-        code=exc.code,
-        message=exc.message,
-    )
+    if isinstance(data, UUID):
+        return str(data)
 
-
-async def handle_ws_validation_exception(
-    websocket: WebSocket,
-    *,
-    exc: ValidationError,
-    path: str,
-) -> None:
-    logger.warning(
-        "[WSValidationError] path=%s | errors=%s",
-        path,
-        exc.errors(),
-    )
-
-    await send_ws_error(
-        websocket,
-        code=ResponseCode.COMMON422,
-        message="요청값 검증에 실패했습니다.",
-        result=exc.errors(),
-    )
-
-
-async def handle_ws_unhandled_exception(
-    websocket: WebSocket,
-    *,
-    exc: Exception,
-    path: str,
-) -> None:
-    logger.exception(
-        "[WSUnhandledException] path=%s | error=%s",
-        path,
-        str(exc),
-    )
-
-    await send_ws_error(
-        websocket,
-        code=ResponseCode.COMMON500,
-        message="서버 오류가 발생했습니다.",
-    )
+    return data

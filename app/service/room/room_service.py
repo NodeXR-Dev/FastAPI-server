@@ -11,14 +11,14 @@ from app.schema.room.request import (
     ExitRoomRequest,
 )
 from app.schema.room.response import (
-    CreateRoomResult,
-    EnterRoomResult,
-    ExitRoomResult,
-    RoomListResult,
-    RoomListItemResponse,
+    CreateRoomResponse,
+    EnterRoomResponse,
+    ExitRoomResponse,
+    RoomListResponse,
+    RoomListItemResult,
     RoomUserResponse,
-    RoomInfoResult,
-    RoomInfoUserResponse,
+    RoomInfoResponse,
+    RoomInfoUserResult,
 )
 from app.core.security import hash_password, verify_password
 from app.core.response.code import ResponseCode
@@ -97,7 +97,7 @@ class RoomService:
         self,
         request: CreateRoomRequest,
         db: Session,
-    ) -> CreateRoomResult:
+    ) -> CreateRoomResponse:
         logger.info(
             "[create_room] start | topic=%s | nickname=%s",
             request.room_topic,
@@ -155,7 +155,7 @@ class RoomService:
             leader.user_id,
         )
 
-        return CreateRoomResult(
+        return CreateRoomResponse(
             room_id=room.room_id,
             room_topic=room.topic,
             password=request.password,
@@ -170,12 +170,12 @@ class RoomService:
     def get_room_list(
         self,
         db: Session,
-    ) -> RoomListResult:
+    ) -> RoomListResponse:
         logger.info("[get_room_list] start")
 
         rooms = self.room_repository.find_rooms(db)
 
-        room_items: list[RoomListItemResponse] = []
+        room_items: list[RoomListItemResult] = []
 
         for room in rooms:
             joined_members = [
@@ -193,7 +193,7 @@ class RoomService:
             ]
 
             room_items.append(
-                RoomListItemResponse(
+                RoomListItemResult(
                     room_id=room.room_id,
                     room_topic=room.topic,
                     users=users,
@@ -206,7 +206,7 @@ class RoomService:
             len(room_items),
         )
 
-        return RoomListResult(
+        return RoomListResponse(
             rooms=room_items,
         )
 
@@ -218,7 +218,7 @@ class RoomService:
         self,
         db: Session,
         room_id: UUID,
-    ) -> RoomInfoResult:
+    ) -> RoomInfoResponse:
         logger.info(
             "[get_room_info] start | room_id=%s",
             room_id,
@@ -231,7 +231,7 @@ class RoomService:
 
         # 현재 JOINED 상태인 사용자만 반환
         users = [
-            RoomInfoUserResponse(
+            RoomInfoUserResult(
                 user_id=member.user.user_id,
                 nickname=member.user.nickname,
                 leader=member.role == RoomMemberRole.LEADER,
@@ -247,7 +247,7 @@ class RoomService:
             len(users),
         )
 
-        return RoomInfoResult(
+        return RoomInfoResponse(
             room_id=room.room_id,
             room_topic=room.topic,
             users=users,
@@ -264,7 +264,7 @@ class RoomService:
         self,
         db: Session,
         request: EnterRoomRequest,
-    ) -> tuple[EnterRoomResult, bool]:
+    ) -> tuple[EnterRoomResponse, bool]:
         logger.info(
             "[enter_room] start "
             "| room_id=%s | nickname=%s",
@@ -311,7 +311,7 @@ class RoomService:
             db.refresh(existing_member)
             db.refresh(room)
 
-            result = EnterRoomResult(
+            result = EnterRoomResponse(
                 room_id=room.room_id,
                 user_id=existing_member.user_id,
             )
@@ -355,7 +355,7 @@ class RoomService:
         db.refresh(room_member)
         db.refresh(room)
 
-        result = EnterRoomResult(
+        result = EnterRoomResponse(
             room_id=room.room_id,
             user_id=user.user_id,
         )
@@ -377,7 +377,7 @@ class RoomService:
         self,
         request: ExitRoomRequest,
         db: Session,
-    ) -> ExitRoomResult:
+    ) -> ExitRoomResponse:
         logger.info(
             "[exit_room] start "
             "| room_id=%s | nickname=%s",
@@ -423,7 +423,7 @@ class RoomService:
             room.is_active,
         )
 
-        return ExitRoomResult(
+        return ExitRoomResponse(
             room_id=room.room_id,
             user_id=existing_member.user_id,
         )

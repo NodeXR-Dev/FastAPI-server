@@ -1,5 +1,3 @@
-# app/repositories/room_repository.py
-
 from uuid import UUID
 
 from sqlalchemy import func, select
