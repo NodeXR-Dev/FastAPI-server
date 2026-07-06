@@ -110,10 +110,25 @@ class GraphInteractionService:
             payload,
         )
 
+        job_id = self._parse_uuid_payload(
+            payload=payload,
+            key="job_id",
+        )
+
         parent_node_id = self._parse_optional_uuid_payload(
             payload=payload,
             key="parent_node_id",
         )
+
+        sub_graph_id = self._parse_optional_uuid_payload(
+            payload=payload,
+            key="sub_graph_id",
+        )
+
+        if parent_node_id is None and sub_graph_id is None:
+            raise ValueError(
+                "[GRAPH400] Either parent_node_id or sub_graph_id is required"
+            )
 
         node_text = self._get_required_str(
             payload=payload,
@@ -137,15 +152,7 @@ class GraphInteractionService:
                 f"[GRAPH400] Position values must be numbers: position={position}"
             )
 
-        logger.info(
-            "[node_create_payload_parsed] room_id=%s | user_id=%s | parent_node_id=%s | node_text=%s | position=%s",
-            room_id,
-            user_id,
-            parent_node_id,
-            node_text,
-            [x, y, z],
-        )
-
+        node_type = NodeType.PROPERTY
         edge = None
 
         if parent_node_id is not None:
@@ -154,8 +161,14 @@ class GraphInteractionService:
                 node_id=parent_node_id,
             )
 
-            sub_graph_id = parent_node.sub_graph_id
-            node_type = NodeType.PROPERTY
+            resolved_sub_graph_id = parent_node.sub_graph_id
+
+            if sub_graph_id is not None and sub_graph_id != resolved_sub_graph_id:
+                raise ValueError(
+                    "[GRAPH400] sub_graph_id does not match parent_node's sub_graph_id"
+                )
+
+            sub_graph_id = resolved_sub_graph_id
 
             logger.info(
                 "[node_create_parent_found] room_id=%s | parent_node_id=%s | sub_graph_id=%s",
@@ -164,20 +177,17 @@ class GraphInteractionService:
                 sub_graph_id,
             )
 
-        else:
-            sub_graph = self.graph_repository.create_sub_graph(
-                db=self.db,
-                room_id=room_id,
-            )
-
-            sub_graph_id = sub_graph.sub_graph_id
-            node_type = NodeType.PART
-
-            logger.info(
-                "[node_create_sub_graph_created] room_id=%s | sub_graph_id=%s",
-                room_id,
-                sub_graph_id,
-            )
+        logger.info(
+            "[node_create_payload_parsed] room_id=%s | user_id=%s | job_id=%s | parent_node_id=%s | sub_graph_id=%s | node_text=%s | node_type=%s | position=%s",
+            room_id,
+            user_id,
+            job_id,
+            parent_node_id,
+            sub_graph_id,
+            node_text,
+            node_type,
+            [x, y, z],
+        )
 
         node = self.graph_repository.create_node(
             db=self.db,
@@ -192,9 +202,10 @@ class GraphInteractionService:
         )
 
         logger.info(
-            "[node_created] room_id=%s | user_id=%s | node_id=%s | parent_node_id=%s | sub_graph_id=%s | node_type=%s",
+            "[node_created] room_id=%s | user_id=%s | job_id=%s | node_id=%s | parent_node_id=%s | sub_graph_id=%s | node_type=%s",
             room_id,
             user_id,
+            job_id,
             node.node_id,
             parent_node_id,
             sub_graph_id,
@@ -217,10 +228,9 @@ class GraphInteractionService:
                 parent_node_id,
                 node.node_id,
             )
-
         else:
             logger.info(
-                "[node_create_edge_skipped] room_id=%s | node_id=%s | reason=root_node",
+                "[node_create_edge_skipped] room_id=%s | node_id=%s | reason=root_property_node",
                 room_id,
                 node.node_id,
             )
@@ -234,9 +244,11 @@ class GraphInteractionService:
             edge_id=edge.edge_id if edge else None,
             payload={
                 "interaction_type": "NODE_CREATE",
+                "job_id": str(job_id),
                 "parent_node_id": str(parent_node_id) if parent_node_id else None,
                 "sub_graph_id": str(sub_graph_id),
                 "node_text": node_text,
+                "node_type": node_type.value if hasattr(node_type, "value") else str(node_type),
                 "position": [x, y, z],
                 "created_node_id": str(node.node_id),
                 "created_edge_id": str(edge.edge_id) if edge else None,
@@ -244,9 +256,10 @@ class GraphInteractionService:
         )
 
         logger.info(
-            "[node_create_event_saved] room_id=%s | user_id=%s | node_id=%s | edge_id=%s",
+            "[node_create_event_saved] room_id=%s | user_id=%s | job_id=%s | node_id=%s | edge_id=%s",
             room_id,
             user_id,
+            job_id,
             node.node_id,
             edge.edge_id if edge else None,
         )
@@ -265,19 +278,25 @@ class GraphInteractionService:
         self.db.commit()
 
         logger.info(
-            "[node_create_saved] room_id=%s | user_id=%s | node_id=%s | parent_node_id=%s | sub_graph_id=%s | edge_id=%s | position=%s",
+            "[node_create_saved] room_id=%s | user_id=%s | job_id=%s | node_id=%s | parent_node_id=%s | sub_graph_id=%s | edge_id=%s | position=%s",
             room_id,
             user_id,
+            job_id,
             node.node_id,
             parent_node_id,
             sub_graph_id,
             edge.edge_id if edge else None,
             [x, y, z],
         )
-        
+
         return {
-            "node_id" : node.node_id,
-            "node_type" : node.node_type
+            "isSuccess": True,
+            "code": "NODE200",
+            "message": "노드 생성 성공",
+            "result": {
+                "job_id": str(job_id),
+                "node_id": str(node.node_id),
+            },
         }
 
     # =========================
@@ -296,25 +315,30 @@ class GraphInteractionService:
             key="node_id",
         )
 
-        position = self._get_required_dict(
-            payload=payload,
-            key="position",
-        )
+        position = payload.get("position")
 
-        x = self._get_required_float(position, "x")
-        y = self._get_required_float(position, "y")
-        z = self._get_required_float(position, "z")
+        if not isinstance(position, list) or len(position) != 3:
+            raise ValueError("[GRAPH400] Field must be array of length 3: position")
+
+        try:
+            x = float(position[0])
+            y = float(position[1])
+            z = float(position[2])
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"[GRAPH400] Position values must be numbers: position={position}"
+            )
 
         node = self._get_active_node_or_raise(
             room_id=room_id,
             node_id=node_id,
         )
 
-        before_position = {
-            "x": node.position_x,
-            "y": node.position_y,
-            "z": node.position_z,
-        }
+        before_position = [
+            float(node.position_x),
+            float(node.position_y),
+            float(node.position_z),
+        ]
 
         self.graph_repository.update_node_position(
             node=node,
@@ -333,11 +357,7 @@ class GraphInteractionService:
                 "interaction_type": "NODE_MOVE",
                 "node_id": str(node.node_id),
                 "before_position": before_position,
-                "after_position": {
-                    "x": x,
-                    "y": y,
-                    "z": z,
-                },
+                "after_position": [x, y, z],
             },
         )
 
@@ -349,7 +369,7 @@ class GraphInteractionService:
             room_id,
             user_id,
             node_id,
-            {"x": x, "y": y, "z": z},
+            [x, y, z],
         )
 
     # =========================
@@ -522,6 +542,11 @@ class GraphInteractionService:
         user_id: UUID | None,
         payload: dict,
     ) -> None:
+        job_id = self._parse_uuid_payload(
+            payload=payload,
+            key="job_id"
+        )
+        
         from_node_id = self._parse_uuid_payload(
             payload=payload,
             key="from_node_id",
@@ -603,6 +628,7 @@ class GraphInteractionService:
         )
         
         return {
+            "job_id" : job_id,
             "edge_id" : edge.edge_id
         }
 
