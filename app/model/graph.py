@@ -197,6 +197,11 @@ class GraphEvent(Base):
         UUID(as_uuid=True),
         ForeignKey("edges.edge_id"),
     )
+    
+    graph_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("graph_snapshots.graph_snapshot_id"),
+    )
 
     related_fact_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

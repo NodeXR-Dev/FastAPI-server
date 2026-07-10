@@ -87,6 +87,7 @@ class GraphEventType(str, enum.Enum):
     NODE_MOVE = "NODE_MOVE"
     EDGE_CREATE = "EDGE_CREATE"
     EDGE_DELETE = "EDGE_DELETE"
+    GENERATE_2D = "GENERATE_2D"
 
 
 class AlertType(str, enum.Enum):
