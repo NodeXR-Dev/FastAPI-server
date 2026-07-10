@@ -1,13 +1,14 @@
+from collections import defaultdict
 from datetime import datetime
 import json
 from uuid import UUID
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.model.graph import SubGraph, Node, Edge, GraphSnapshot, GraphEvent
 from app.model.memory import NodeUtteranceLink
-from app.model.enum import GraphEventType
+from app.model.enum import GraphEventType, NodeType
 from app.schema.graph.response import GraphResponse
 
 
@@ -97,7 +98,10 @@ class GraphRepository:
         *,
         room_id: UUID,
     ) -> tuple[list[Node], list[Edge]]:
-
+        """
+        현재 그래프 조회용.
+        deleted_at이 null인 active node/edge만 반환한다.
+        """
         nodes = (
             db.query(Node)
             .filter(
@@ -120,23 +124,30 @@ class GraphRepository:
 
         return nodes, edges
 
-    def get_next_graph_version(
+    def get_latest_graph_version(
         self,
         db: Session,
         *,
         room_id: UUID,
     ) -> int:
-
         latest_version = (
             db.query(func.max(GraphSnapshot.version))
             .filter(GraphSnapshot.room_id == room_id)
             .scalar()
         )
 
-        if latest_version is None:
-            return 1
+        return latest_version or 0
 
-        return latest_version + 1
+    def get_next_graph_version(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+    ) -> int:
+        return self.get_latest_graph_version(
+            db=db,
+            room_id=room_id,
+        ) + 1
 
     def build_snapshot_data(
         self,
@@ -145,33 +156,432 @@ class GraphRepository:
         nodes: list[Node],
         edges: list[Edge],
     ) -> dict:
+        """
+        GraphSnapshot.snapshot_data에 저장할 JSON dict를 만든다.
+
+        규칙
+        - nodes/edges는 이미 active(deleted_at is null) 데이터만 전달받는다고 가정한다.
+        - snapshot_data는 GraphSnapshotResponse 형태에 맞춘다.
+        - DB의 Edge.from_node_id/to_node_id는 변경하지 않는다.
+        - snapshot_data를 만들 때만 PART -> PROPERTY edge의 to_node_id를
+          PROPERTY가 속한 sub_graph의 root_node_id로 변환한다.
+        - used_in_generation은 active PART -> PROPERTY edge를 기준으로 재계산한다.
+          PART, 연결된 PROPERTY, PROPERTY의 parent_node_id ancestor chain,
+          그리고 그 경로의 edge들을 true로 표시한다.
+        - 직전 정책 보완 사항에 따라 PART/PROPERTY -> REFERENCE 직접 연결도 true로 표시한다.
+        """
+        node_by_id = {
+            node.node_id: node
+            for node in nodes
+        }
+        active_edges = [
+            edge
+            for edge in edges
+            if edge.from_node_id in node_by_id and edge.to_node_id in node_by_id
+        ]
+        active_edge_by_parent_child = self._build_active_edge_by_parent_child(
+            edges=active_edges,
+        )
+
+        used_node_ids, used_edge_ids = self._resolve_used_in_generation(
+            nodes=nodes,
+            edges=active_edges,
+        )
+
+        nodes_by_sub_graph_id: dict[UUID, list[Node]] = defaultdict(list)
+        edges_by_sub_graph_id: dict[UUID, list[Edge]] = defaultdict(list)
+
+        for node in nodes:
+            if node.sub_graph_id is None:
+                continue
+            nodes_by_sub_graph_id[node.sub_graph_id].append(node)
+
+        for edge in active_edges:
+            sub_graph_id = edge.sub_graph_id
+
+            if sub_graph_id is None:
+                from_node = node_by_id.get(edge.from_node_id)
+                sub_graph_id = from_node.sub_graph_id if from_node is not None else None
+
+            if sub_graph_id is None:
+                continue
+
+            edges_by_sub_graph_id[sub_graph_id].append(edge)
+
+        sub_graph_ids = sorted(
+            set(nodes_by_sub_graph_id.keys()) | set(edges_by_sub_graph_id.keys()),
+            key=str,
+        )
+
         return {
             "graph_version": version,
-            "nodes": [
+            "core_2d_image": self._build_core_2d_image_snapshot(),
+            "sub_graphs": [
                 {
-                    "node_id": str(node.node_id),
-                    "type": node.node_type.value,
-                    "node_text": node.node_text,
-                    "position": [
-                        node.position_x,
-                        node.position_y,
-                        node.position_z,
+                    "sub_graph_id": str(sub_graph_id),
+                    "root_node_id": self._resolve_root_node_id(
+                        nodes=nodes_by_sub_graph_id.get(sub_graph_id, []),
+                    ),
+                    "nodes": [
+                        self._build_node_snapshot(
+                            node=node,
+                            used_in_generation=node.node_id in used_node_ids,
+                        )
+                        for node in sorted(
+                            nodes_by_sub_graph_id.get(sub_graph_id, []),
+                            key=lambda item: str(item.node_id),
+                        )
                     ],
-                    "parent_node_id": str(node.parent_node_id) if node.parent_node_id else None,
-                    "data": {},
+                    "edges": [
+                        self._build_edge_snapshot(
+                            edge=edge,
+                            node_by_id=node_by_id,
+                            active_edge_by_parent_child=active_edge_by_parent_child,
+                            used_in_generation=edge.edge_id in used_edge_ids,
+                        )
+                        for edge in sorted(
+                            edges_by_sub_graph_id.get(sub_graph_id, []),
+                            key=lambda item: str(item.edge_id),
+                        )
+                    ],
                 }
-                for node in nodes
-            ],
-            "edges": [
-                {
-                    "edge_id": str(edge.edge_id),
-                    "from_node_id": str(edge.from_node_id),
-                    "to_node_id": str(edge.to_node_id),
-                    "label": edge.label,
-                }
-                for edge in edges
+                for sub_graph_id in sub_graph_ids
             ],
         }
+
+    def _resolve_used_in_generation(
+        self,
+        *,
+        nodes: list[Node],
+        edges: list[Edge],
+    ) -> tuple[set[UUID], set[UUID]]:
+        """
+        active edge 전체를 기준으로 snapshot의 used_in_generation을 재계산한다.
+
+        핵심 정책
+        - PART -> PROPERTY edge가 active이면:
+          1) PART node true
+          2) PART -> PROPERTY edge true
+          3) PROPERTY node true
+          4) PROPERTY에서 parent_node_id를 따라 root까지 모든 ancestor node true
+          5) 해당 ancestor chain에 존재하는 parent-child edge true
+        - edge 삭제 시에는 deleted_at이 null인 active edge 목록에서 빠지므로
+          별도 DB 컬럼 없이 snapshot 재계산 결과에서 false가 된다.
+        - edge label은 관계 표현용이므로 used 판단에 사용하지 않는다.
+        - REFERENCE는 직전 정책 보완에 따라 PART/PROPERTY에서 직접 연결된 경우 true 처리한다.
+        """
+        node_by_id = {
+            node.node_id: node
+            for node in nodes
+        }
+        active_edge_by_parent_child = self._build_active_edge_by_parent_child(
+            edges=edges,
+        )
+
+        used_node_ids: set[UUID] = set()
+        used_edge_ids: set[UUID] = set()
+
+        for edge in edges:
+            from_node = node_by_id.get(edge.from_node_id)
+            to_node = node_by_id.get(edge.to_node_id)
+
+            if from_node is None or to_node is None:
+                continue
+
+            if self._is_part_property_edge(
+                from_node=from_node,
+                to_node=to_node,
+            ):
+                used_node_ids.add(from_node.node_id)
+                used_node_ids.add(to_node.node_id)
+                used_edge_ids.add(edge.edge_id)
+
+                ancestor_node_ids, ancestor_edge_ids = self._collect_ancestor_path_to_root(
+                    node=to_node,
+                    node_by_id=node_by_id,
+                    active_edge_by_parent_child=active_edge_by_parent_child,
+                )
+                used_node_ids.update(ancestor_node_ids)
+                used_edge_ids.update(ancestor_edge_ids)
+                continue
+
+            if self._is_reference_generation_edge(
+                from_node=from_node,
+                to_node=to_node,
+            ):
+                used_node_ids.add(from_node.node_id)
+                used_node_ids.add(to_node.node_id)
+                used_edge_ids.add(edge.edge_id)
+
+        return used_node_ids, used_edge_ids
+
+    def _is_part_property_edge(
+        self,
+        *,
+        from_node: Node,
+        to_node: Node,
+    ) -> bool:
+        return (
+            self._node_type_value(from_node) == NodeType.PART.value
+            and self._node_type_value(to_node) == NodeType.PROPERTY.value
+        )
+
+    def _is_reference_generation_edge(
+        self,
+        *,
+        from_node: Node,
+        to_node: Node,
+    ) -> bool:
+        return (
+            self._node_type_value(from_node)
+            in {
+                NodeType.PART.value,
+                NodeType.PROPERTY.value,
+            }
+            and self._node_type_value(to_node) == NodeType.REFERENCE.value
+        )
+
+    def _build_active_edge_by_parent_child(
+        self,
+        *,
+        edges: list[Edge],
+    ) -> dict[tuple[UUID, UUID], Edge]:
+        edge_by_parent_child: dict[tuple[UUID, UUID], Edge] = {}
+
+        for edge in edges:
+            edge_by_parent_child[(edge.from_node_id, edge.to_node_id)] = edge
+
+        return edge_by_parent_child
+
+    def _collect_ancestor_path_to_root(
+        self,
+        *,
+        node: Node,
+        node_by_id: dict[UUID, Node],
+        active_edge_by_parent_child: dict[tuple[UUID, UUID], Edge],
+    ) -> tuple[set[UUID], set[UUID]]:
+        """
+        node에서 parent_node_id를 따라 root까지 올라가며 node와 edge를 수집한다.
+        parent-child edge는 보통 parent -> child 방향이지만, 혹시 반대로 저장된 edge도
+        놓치지 않도록 child -> parent 방향도 fallback으로 확인한다.
+        """
+        ancestor_node_ids: set[UUID] = set()
+        ancestor_edge_ids: set[UUID] = set()
+
+        current = node
+        visited_node_ids: set[UUID] = set()
+
+        while current is not None:
+            if current.node_id in visited_node_ids:
+                break
+
+            visited_node_ids.add(current.node_id)
+            ancestor_node_ids.add(current.node_id)
+
+            if current.parent_node_id is None:
+                break
+
+            parent = node_by_id.get(current.parent_node_id)
+            if parent is None:
+                break
+
+            parent_child_edge = active_edge_by_parent_child.get(
+                (parent.node_id, current.node_id),
+            )
+            child_parent_edge = active_edge_by_parent_child.get(
+                (current.node_id, parent.node_id),
+            )
+
+            if parent_child_edge is not None:
+                ancestor_edge_ids.add(parent_child_edge.edge_id)
+            elif child_parent_edge is not None:
+                ancestor_edge_ids.add(child_parent_edge.edge_id)
+
+            current = parent
+
+        return ancestor_node_ids, ancestor_edge_ids
+
+    def _resolve_root_node_id(
+        self,
+        *,
+        nodes: list[Node],
+    ) -> str | None:
+        if not nodes:
+            return None
+
+        node_by_id = {
+            node.node_id: node
+            for node in nodes
+        }
+
+        explicit_root = next(
+            (
+                node
+                for node in nodes
+                if node.parent_node_id is None
+            ),
+            None,
+        )
+
+        if explicit_root is not None:
+            return str(explicit_root.node_id)
+
+        fallback_root = next(
+            (
+                node
+                for node in nodes
+                if node.parent_node_id not in node_by_id
+            ),
+            nodes[0],
+        )
+
+        return str(fallback_root.node_id)
+
+    def _resolve_root_node_id_for_node(
+        self,
+        *,
+        node: Node,
+        node_by_id: dict[UUID, Node],
+    ) -> UUID:
+        current = node
+        visited_node_ids: set[UUID] = set()
+
+        while current.parent_node_id is not None:
+            if current.node_id in visited_node_ids:
+                break
+
+            visited_node_ids.add(current.node_id)
+            parent = node_by_id.get(current.parent_node_id)
+
+            if parent is None:
+                break
+
+            if node.sub_graph_id is not None and parent.sub_graph_id != node.sub_graph_id:
+                break
+
+            current = parent
+
+        return current.node_id
+
+    def _build_node_snapshot(
+        self,
+        *,
+        node: Node,
+        used_in_generation: bool,
+    ) -> dict:
+        return {
+            "node_id": str(node.node_id),
+            "type": self._node_type_value(node),
+            "node_text": node.node_text,
+            "position": [
+                self._nullable_float(node.position_x),
+                self._nullable_float(node.position_y),
+                self._nullable_float(node.position_z),
+            ],
+            "parent_node_id": str(node.parent_node_id) if node.parent_node_id else None,
+            "used_in_generation": used_in_generation,
+            "data": self._build_node_data_snapshot(node=node),
+        }
+
+    def _build_edge_snapshot(
+        self,
+        *,
+        edge: Edge,
+        node_by_id: dict[UUID, Node],
+        active_edge_by_parent_child: dict[tuple[UUID, UUID], Edge],
+        used_in_generation: bool,
+    ) -> dict:
+        from_node = node_by_id.get(edge.from_node_id)
+        to_node = node_by_id.get(edge.to_node_id)
+        snapshot_to_node_id = edge.to_node_id
+
+        if (
+            from_node is not None
+            and to_node is not None
+            and self._is_part_property_edge(
+                from_node=from_node,
+                to_node=to_node,
+            )
+        ):
+            snapshot_to_node_id = self._resolve_root_node_id_for_node(
+                node=to_node,
+                node_by_id=node_by_id,
+            )
+
+        return {
+            "edge_id": str(edge.edge_id),
+            "from_node_id": str(edge.from_node_id),
+            "to_node_id": str(snapshot_to_node_id),
+            "label": edge.label,
+            "used_in_generation": used_in_generation,
+        }
+
+    def _build_core_2d_image_snapshot(self) -> dict | None:
+        """
+        현재 업로드된 repository 코드만으로는 core 2D asset을 조회할 수 있는 관계가 없다.
+        Asset/Feature/Room 모델 연결이 확정되면 여기서 최신 core image를 조회해 채우면 된다.
+        """
+        return None
+
+    def _build_node_data_snapshot(
+        self,
+        *,
+        node: Node,
+    ) -> dict:
+        """
+        Node 모델에 JSON/data 컬럼이 있으면 snapshot에 최대한 반영한다.
+        현재 업로드된 코드 기준으로는 Node의 추가 data 필드가 확인되지 않아 기본 {}를 반환한다.
+        """
+        for attr_name in ("data", "metadata", "extra_data"):
+            value = getattr(node, attr_name, None)
+
+            if isinstance(value, dict):
+                return value
+
+            if isinstance(value, str) and value.strip():
+                try:
+                    parsed = json.loads(value)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except json.JSONDecodeError:
+                    continue
+
+        return {}
+
+    def _node_type_value(self, node: Node) -> str:
+        node_type = node.node_type
+        return node_type.value if hasattr(node_type, "value") else str(node_type)
+
+    def _nullable_float(self, value) -> float | None:
+        if value is None:
+            return None
+        return float(value)
+
+    def build_current_graph_snapshot_data(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+    ) -> dict:
+        """
+        GET /api/graph 에서 사용한다.
+        DB에는 snapshot을 새로 저장하지 않고, 현재 active graph만 response 형태로 build한다.
+        """
+        all_nodes, all_edges = self.find_graph_by_room_id(
+            db=db,
+            room_id=room_id,
+        )
+
+        latest_version = self.get_latest_graph_version(
+            db=db,
+            room_id=room_id,
+        )
+
+        return self.build_snapshot_data(
+            version=latest_version,
+            nodes=all_nodes,
+            edges=all_edges,
+        )
 
     def find_active_node_by_id(
         self,
@@ -476,12 +886,16 @@ class GraphRepository:
         payload: dict,
         node_id: UUID | None = None,
         edge_id: UUID | None = None,
+        graph_snapshot_id: UUID | None = None,
+        related_fact_id: UUID | None = None,
     ) -> GraphEvent:
         graph_event = GraphEvent(
             room_id=room_id,
             user_id=user_id,
             node_id=node_id,
             edge_id=edge_id,
+            graph_snapshot_id=graph_snapshot_id,
+            related_fact_id=related_fact_id,
             event_type=event_type,
             payload=json.dumps(payload, ensure_ascii=False, default=str),
         )
@@ -490,6 +904,51 @@ class GraphRepository:
         db.flush()
 
         return graph_event
+
+    def find_graph_history_snapshots_by_room_id(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+    ) -> list[GraphSnapshot]:
+        """
+        GET /api/history 에서 사용한다.
+        NODE_MOVE를 제외하고 graph_event에 연결된 snapshot만 시간순으로 반환한다.
+        """
+        return (
+            db.query(GraphSnapshot)
+            .join(
+                GraphEvent,
+                GraphEvent.graph_snapshot_id == GraphSnapshot.graph_snapshot_id,
+            )
+            .filter(
+                GraphEvent.room_id == room_id,
+                GraphEvent.event_type != GraphEventType.NODE_MOVE,
+                GraphEvent.graph_snapshot_id.isnot(None),
+            )
+            .order_by(GraphEvent.created_at.asc(), GraphEvent.graph_event_id.asc())
+            .all()
+        )
+
+    def find_latest_graph_snapshot_by_room_id(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+    ) -> GraphSnapshot | None:
+        return (
+            db.query(GraphSnapshot)
+            .filter(GraphSnapshot.room_id == room_id)
+            .order_by(GraphSnapshot.version.desc(), GraphSnapshot.created_at.desc())
+            .first()
+        )
+
+    def load_snapshot_data(
+        self,
+        *,
+        graph_snapshot: GraphSnapshot,
+    ) -> dict:
+        return json.loads(graph_snapshot.snapshot_data)
 
     # =========================
     # Graph Interaction - Snapshot
@@ -519,7 +978,7 @@ class GraphRepository:
 
         graph_snapshot = GraphSnapshot(
             room_id=room_id,
-            snapshot_data=json.dumps(snapshot_data, ensure_ascii=False),
+            snapshot_data=json.dumps(snapshot_data, ensure_ascii=False, default=str),
             version=next_version,
         )
 
@@ -578,3 +1037,28 @@ class GraphRepository:
 
         chain.reverse()
         return chain
+    
+    def find_history_snapshots_by_room_id(
+        self,
+        *,
+        db: Session,
+        room_id: UUID,
+    ) -> list[tuple[GraphEvent, GraphSnapshot]]:
+        stmt = (
+            select(GraphEvent, GraphSnapshot)
+            .join(
+                GraphSnapshot,
+                GraphEvent.graph_snapshot_id == GraphSnapshot.graph_snapshot_id,
+            )
+            .where(
+                GraphEvent.room_id == room_id,
+                GraphEvent.graph_snapshot_id.is_not(None),
+                GraphEvent.event_type != GraphEventType.NODE_MOVE,
+            )
+            .order_by(
+                GraphEvent.created_at.asc(),
+                GraphEvent.graph_event_id.asc(),
+            )
+        )
+
+        return db.execute(stmt).all()

@@ -72,6 +72,11 @@ class ResponseCode(str, Enum):
     IMG202 = "IMG202"        # 이미지 요청 성공
     IMG500 = "IMG500"
     
+    HISTORY200 = "HISTORY200"
+    HISTORY400 = "HISTORY400"
+    HISTORY404 = "HISTORY404"
+    HISTORY500 = "HISTORY500"
+    
     
 RESPONSE_MESSAGES = {
     ResponseCode.BTUTT200: "버튼 조작 발화 처리 성공",
@@ -112,6 +117,11 @@ RESPONSE_MESSAGES = {
     
     ResponseCode.IMG202: "2D 이미지 생성 요청이 접수되었습니다.",
     ResponseCode.IMG500: "2D 이미지 생성에 실패했습니다.",
+    
+    ResponseCode.HISTORY200 : "노드 그래프 히스토리 조회 성공",
+    ResponseCode.HISTORY400 : "노드 그래프 히스토리 조회 요청 실패",
+    ResponseCode.HISTORY404 : "노드 그래프 히스토리가 존재하지 않습니다",
+    ResponseCode.HISTORY500 :"노드 그래프 히스토리 조회 중 서버 오류가 발생했습니다",
 }
 
 

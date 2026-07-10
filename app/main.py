@@ -12,6 +12,7 @@ from app.api.room import router as room_router
 from app.api.feature import router as feature_router
 from app.api.ws_room_event import router as ws_room_event_router
 from app.api.generation import router as generation_router
+from app.api.history import router as history_router
 
 from app.core.response.exceptions import (
     BaseCustomException,
@@ -69,6 +70,10 @@ app.include_router(
 )
 app.include_router(
     generation_router,
+    prefix="/api"
+)
+app.include_router(
+    history_router,
     prefix="/api"
 )
 

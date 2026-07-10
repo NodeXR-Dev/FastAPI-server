@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.core.logger import get_logger
-from app.model.graph import Node, Edge
+from app.model.graph import Node, Edge, GraphSnapshot
 from app.model.enum import GraphEventType, NodeType
 from app.repository.graph_repository import GraphRepository
 
@@ -24,7 +24,7 @@ class GraphInteractionService:
         room_id: UUID,
         user_id: UUID | None,
         payload: dict,
-    ) -> dict:
+    ) -> dict | None:
         logger.info(
             "[graph_interaction] event_type=%s | room_id=%s | user_id=%s",
             event_type,
@@ -37,9 +37,9 @@ class GraphInteractionService:
                 return await self._handle_node_save(
                     room_id=room_id,
                     user_id=user_id,
-                    payload=payload
+                    payload=payload,
                 )
-            
+
             if event_type == "NODE_MOVE":
                 await self._handle_node_move(
                     room_id=room_id,
@@ -95,7 +95,7 @@ class GraphInteractionService:
             )
 
             raise
-    
+
     async def _handle_node_save(
         self,
         *,
@@ -125,11 +125,6 @@ class GraphInteractionService:
             key="sub_graph_id",
         )
 
-        if parent_node_id is None and sub_graph_id is None:
-            raise ValueError(
-                "[GRAPH400] Either parent_node_id or sub_graph_id is required"
-            )
-
         node_text = self._get_required_str(
             payload=payload,
             key="node_text",
@@ -138,44 +133,26 @@ class GraphInteractionService:
         if not node_text:
             raise ValueError("[GRAPH400] node_text must not be blank")
 
-        position = payload.get("position")
+        x, y, z = self._parse_position_payload(payload=payload)
+        requested_node_type = self._parse_optional_node_type(payload=payload)
 
-        if not isinstance(position, list) or len(position) != 3:
-            raise ValueError("[GRAPH400] Field must be array of length 3: position")
+        edge: Edge | None = None
 
-        try:
-            x = float(position[0])
-            y = float(position[1])
-            z = float(position[2])
-        except (TypeError, ValueError):
+        
+        parent_node = self._get_active_node_or_raise(
+            room_id=room_id,
+            node_id=parent_node_id,
+        )
+
+        resolved_sub_graph_id = parent_node.sub_graph_id
+
+        if sub_graph_id is not None and sub_graph_id != resolved_sub_graph_id:
             raise ValueError(
-                f"[GRAPH400] Position values must be numbers: position={position}"
-            )
+                "[GRAPH400] sub_graph_id does not match parent_node's sub_graph_id"
+        )
 
-        node_type = NodeType.PROPERTY
-        edge = None
-
-        if parent_node_id is not None:
-            parent_node = self._get_active_node_or_raise(
-                room_id=room_id,
-                node_id=parent_node_id,
-            )
-
-            resolved_sub_graph_id = parent_node.sub_graph_id
-
-            if sub_graph_id is not None and sub_graph_id != resolved_sub_graph_id:
-                raise ValueError(
-                    "[GRAPH400] sub_graph_id does not match parent_node's sub_graph_id"
-                )
-
-            sub_graph_id = resolved_sub_graph_id
-
-            logger.info(
-                "[node_create_parent_found] room_id=%s | parent_node_id=%s | sub_graph_id=%s",
-                room_id,
-                parent_node_id,
-                sub_graph_id,
-            )
+        sub_graph_id = resolved_sub_graph_id
+        node_type = requested_node_type or NodeType.PROPERTY
 
         logger.info(
             "[node_create_payload_parsed] room_id=%s | user_id=%s | job_id=%s | parent_node_id=%s | sub_graph_id=%s | node_text=%s | node_type=%s | position=%s",
@@ -185,7 +162,7 @@ class GraphInteractionService:
             parent_node_id,
             sub_graph_id,
             node_text,
-            node_type,
+            self._node_type_value_from_enum(node_type),
             [x, y, z],
         )
 
@@ -199,17 +176,6 @@ class GraphInteractionService:
             position_x=x,
             position_y=y,
             position_z=z,
-        )
-
-        logger.info(
-            "[node_created] room_id=%s | user_id=%s | job_id=%s | node_id=%s | parent_node_id=%s | sub_graph_id=%s | node_type=%s",
-            room_id,
-            user_id,
-            job_id,
-            node.node_id,
-            parent_node_id,
-            sub_graph_id,
-            node_type,
         )
 
         if parent_node_id is not None:
@@ -228,12 +194,11 @@ class GraphInteractionService:
                 parent_node_id,
                 node.node_id,
             )
-        else:
-            logger.info(
-                "[node_create_edge_skipped] room_id=%s | node_id=%s | reason=root_property_node",
-                room_id,
-                node.node_id,
-            )
+
+        graph_snapshot = self.graph_repository.create_graph_snapshot_from_current_graph(
+            db=self.db,
+            room_id=room_id,
+        )
 
         self.graph_repository.create_graph_event(
             db=self.db,
@@ -242,43 +207,25 @@ class GraphInteractionService:
             event_type=GraphEventType.NODE_CREATE,
             node_id=node.node_id,
             edge_id=edge.edge_id if edge else None,
+            graph_snapshot_id=graph_snapshot.graph_snapshot_id,
             payload={
                 "interaction_type": "NODE_CREATE",
                 "job_id": str(job_id),
                 "parent_node_id": str(parent_node_id) if parent_node_id else None,
-                "sub_graph_id": str(sub_graph_id),
+                "sub_graph_id": str(sub_graph_id) if sub_graph_id else None,
                 "node_text": node_text,
-                "node_type": node_type.value if hasattr(node_type, "value") else str(node_type),
+                "node_type": self._node_type_value(node),
                 "position": [x, y, z],
                 "created_node_id": str(node.node_id),
                 "created_edge_id": str(edge.edge_id) if edge else None,
+                "graph_snapshot_id": str(graph_snapshot.graph_snapshot_id),
             },
-        )
-
-        logger.info(
-            "[node_create_event_saved] room_id=%s | user_id=%s | job_id=%s | node_id=%s | edge_id=%s",
-            room_id,
-            user_id,
-            job_id,
-            node.node_id,
-            edge.edge_id if edge else None,
-        )
-
-        self.graph_repository.create_graph_snapshot_from_current_graph(
-            db=self.db,
-            room_id=room_id,
-        )
-
-        logger.info(
-            "[node_create_snapshot_saved] room_id=%s | node_id=%s",
-            room_id,
-            node.node_id,
         )
 
         self.db.commit()
 
         logger.info(
-            "[node_create_saved] room_id=%s | user_id=%s | job_id=%s | node_id=%s | parent_node_id=%s | sub_graph_id=%s | edge_id=%s | position=%s",
+            "[node_create_saved] room_id=%s | user_id=%s | job_id=%s | node_id=%s | parent_node_id=%s | sub_graph_id=%s | edge_id=%s | graph_snapshot_id=%s",
             room_id,
             user_id,
             job_id,
@@ -286,7 +233,7 @@ class GraphInteractionService:
             parent_node_id,
             sub_graph_id,
             edge.edge_id if edge else None,
-            [x, y, z],
+            graph_snapshot.graph_snapshot_id,
         )
 
         return {
@@ -296,6 +243,7 @@ class GraphInteractionService:
             "result": {
                 "job_id": str(job_id),
                 "node_id": str(node.node_id),
+                "graph_snapshot_id": str(graph_snapshot.graph_snapshot_id),
             },
         }
 
@@ -315,30 +263,14 @@ class GraphInteractionService:
             key="node_id",
         )
 
-        position = payload.get("position")
-
-        if not isinstance(position, list) or len(position) != 3:
-            raise ValueError("[GRAPH400] Field must be array of length 3: position")
-
-        try:
-            x = float(position[0])
-            y = float(position[1])
-            z = float(position[2])
-        except (TypeError, ValueError):
-            raise ValueError(
-                f"[GRAPH400] Position values must be numbers: position={position}"
-            )
+        x, y, z = self._parse_position_payload(payload=payload)
 
         node = self._get_active_node_or_raise(
             room_id=room_id,
             node_id=node_id,
         )
 
-        before_position = [
-            float(node.position_x),
-            float(node.position_y),
-            float(node.position_z),
-        ]
+        before_position = self._node_position(node=node)
 
         self.graph_repository.update_node_position(
             node=node,
@@ -353,15 +285,16 @@ class GraphInteractionService:
             user_id=user_id,
             node_id=node.node_id,
             event_type=GraphEventType.NODE_MOVE,
+            graph_snapshot_id=None,
             payload={
                 "interaction_type": "NODE_MOVE",
                 "node_id": str(node.node_id),
                 "before_position": before_position,
                 "after_position": [x, y, z],
+                "graph_snapshot_id": None,
             },
         )
 
-        # NODE_MOVE는 드래그 중 자주 발생할 수 있으므로 snapshot 생성하지 않음.
         self.db.commit()
 
         logger.info(
@@ -408,32 +341,35 @@ class GraphInteractionService:
             text=text,
         )
 
+        graph_snapshot = self.graph_repository.create_graph_snapshot_from_current_graph(
+            db=self.db,
+            room_id=room_id,
+        )
+
         self.graph_repository.create_graph_event(
             db=self.db,
             room_id=room_id,
             user_id=user_id,
             node_id=node.node_id,
             event_type=GraphEventType.NODE_TEXT_UPDATE,
+            graph_snapshot_id=graph_snapshot.graph_snapshot_id,
             payload={
                 "interaction_type": "NODE_TEXT_UPDATE",
                 "node_id": str(node.node_id),
                 "before_text": before_text,
                 "after_text": text,
+                "graph_snapshot_id": str(graph_snapshot.graph_snapshot_id),
             },
-        )
-
-        self.graph_repository.create_graph_snapshot_from_current_graph(
-            db=self.db,
-            room_id=room_id,
         )
 
         self.db.commit()
 
         logger.info(
-            "[node_text_update_saved] room_id=%s | user_id=%s | node_id=%s",
+            "[node_text_update_saved] room_id=%s | user_id=%s | node_id=%s | graph_snapshot_id=%s",
             room_id,
             user_id,
             node_id,
+            graph_snapshot.graph_snapshot_id,
         )
 
     # =========================
@@ -491,12 +427,18 @@ class GraphInteractionService:
             deleted_at=deleted_at,
         )
 
+        graph_snapshot = self.graph_repository.create_graph_snapshot_from_current_graph(
+            db=self.db,
+            room_id=room_id,
+        )
+
         self.graph_repository.create_graph_event(
             db=self.db,
             room_id=room_id,
             user_id=user_id,
             node_id=node.node_id,
             event_type=GraphEventType.NODE_DELETE,
+            graph_snapshot_id=graph_snapshot.graph_snapshot_id,
             payload={
                 "interaction_type": "NODE_DELETE",
                 "node_id": str(node.node_id),
@@ -512,23 +454,20 @@ class GraphInteractionService:
                     str(edge.edge_id)
                     for edge in connected_edges
                 ],
+                "graph_snapshot_id": str(graph_snapshot.graph_snapshot_id),
             },
-        )
-
-        self.graph_repository.create_graph_snapshot_from_current_graph(
-            db=self.db,
-            room_id=room_id,
         )
 
         self.db.commit()
 
         logger.info(
-            "[node_delete_saved] room_id=%s | user_id=%s | node_id=%s | deleted_child_nodes=%s | deleted_edges=%s",
+            "[node_delete_saved] room_id=%s | user_id=%s | node_id=%s | deleted_child_nodes=%s | deleted_edges=%s | graph_snapshot_id=%s",
             room_id,
             user_id,
             node_id,
             len(child_nodes),
             len(connected_edges),
+            graph_snapshot.graph_snapshot_id,
         )
 
     # =========================
@@ -541,12 +480,12 @@ class GraphInteractionService:
         room_id: UUID,
         user_id: UUID | None,
         payload: dict,
-    ) -> None:
+    ) -> dict:
         job_id = self._parse_uuid_payload(
             payload=payload,
-            key="job_id"
+            key="job_id",
         )
-        
+
         from_node_id = self._parse_uuid_payload(
             payload=payload,
             key="from_node_id",
@@ -572,10 +511,10 @@ class GraphInteractionService:
             node_id=to_node_id,
         )
 
-        if from_node.sub_graph_id != to_node.sub_graph_id:
-            raise ValueError(
-                "[GRAPH409] Cannot create edge between nodes in different sub_graphs"
-            )
+        self._validate_edge_create_policy(
+            from_node=from_node,
+            to_node=to_node,
+        )
 
         existing_edge = self.graph_repository.find_active_edge_between_nodes(
             db=self.db,
@@ -589,12 +528,25 @@ class GraphInteractionService:
                 f"[GRAPH409] Edge already exists: edge_id={existing_edge.edge_id}"
             )
 
+        label = self._get_optional_str(
+            payload=payload,
+            key="label",
+        )
+
         edge = self.graph_repository.create_edge(
             db=self.db,
             room_id=room_id,
+            # PART -> PROPERTY cross edge는 서로 다른 sub_graph를 연결할 수 있다.
+            # DB에는 Unity가 보낸 from/to를 그대로 저장하고, snapshot에서만 to_node_id를 root로 변환한다.
             sub_graph_id=from_node.sub_graph_id,
             from_node_id=from_node_id,
             to_node_id=to_node_id,
+            label=label,
+        )
+
+        graph_snapshot = self.graph_repository.create_graph_snapshot_from_current_graph(
+            db=self.db,
+            room_id=room_id,
         )
 
         self.graph_repository.create_graph_event(
@@ -603,33 +555,41 @@ class GraphInteractionService:
             user_id=user_id,
             edge_id=edge.edge_id,
             event_type=GraphEventType.EDGE_CREATE,
+            graph_snapshot_id=graph_snapshot.graph_snapshot_id,
             payload={
                 "interaction_type": "EDGE_CREATE",
+                "job_id": str(job_id),
                 "edge_id": str(edge.edge_id),
                 "from_node_id": str(from_node_id),
                 "to_node_id": str(to_node_id),
+                "label": edge.label,
+                "from_node_type": self._node_type_value(from_node),
+                "to_node_type": self._node_type_value(to_node),
+                "graph_snapshot_id": str(graph_snapshot.graph_snapshot_id),
             },
-        )
-
-        self.graph_repository.create_graph_snapshot_from_current_graph(
-            db=self.db,
-            room_id=room_id,
         )
 
         self.db.commit()
 
         logger.info(
-            "[edge_create_saved] room_id=%s | user_id=%s | edge_id=%s | from_node_id=%s | to_node_id=%s",
+            "[edge_create_saved] room_id=%s | user_id=%s | edge_id=%s | from_node_id=%s | to_node_id=%s | graph_snapshot_id=%s",
             room_id,
             user_id,
             edge.edge_id,
             from_node_id,
             to_node_id,
+            graph_snapshot.graph_snapshot_id,
         )
-        
+
         return {
-            "job_id" : job_id,
-            "edge_id" : edge.edge_id
+            "isSuccess": True,
+            "code": "EDGE200",
+            "message": "엣지 생성 성공",
+            "result": {
+                "job_id": str(job_id),
+                "edge_id": str(edge.edge_id),
+                "graph_snapshot_id": str(graph_snapshot.graph_snapshot_id),
+            },
         }
 
     # =========================
@@ -653,11 +613,34 @@ class GraphInteractionService:
             edge_id=edge_id,
         )
 
+        from_node = self._get_active_node_or_raise(
+            room_id=room_id,
+            node_id=edge.from_node_id,
+        )
+        to_node = self._get_active_node_or_raise(
+            room_id=room_id,
+            node_id=edge.to_node_id,
+        )
+
+        before_payload = {
+            "edge_id": str(edge.edge_id),
+            "from_node_id": str(edge.from_node_id),
+            "to_node_id": str(edge.to_node_id),
+            "label": edge.label,
+            "from_node_type": self._node_type_value(from_node),
+            "to_node_type": self._node_type_value(to_node),
+        }
+
         deleted_at = datetime.now(timezone.utc)
 
         self.graph_repository.soft_delete_edge(
             edge=edge,
             deleted_at=deleted_at,
+        )
+
+        graph_snapshot = self.graph_repository.create_graph_snapshot_from_current_graph(
+            db=self.db,
+            room_id=room_id,
         )
 
         self.graph_repository.create_graph_event(
@@ -666,27 +649,22 @@ class GraphInteractionService:
             user_id=user_id,
             edge_id=edge.edge_id,
             event_type=GraphEventType.EDGE_DELETE,
+            graph_snapshot_id=graph_snapshot.graph_snapshot_id,
             payload={
                 "interaction_type": "EDGE_DELETE",
-                "edge_id": str(edge.edge_id),
-                "from_node_id": str(edge.from_node_id),
-                "to_node_id": str(edge.to_node_id),
-                "label": edge.label,
+                **before_payload,
+                "graph_snapshot_id": str(graph_snapshot.graph_snapshot_id),
             },
-        )
-
-        self.graph_repository.create_graph_snapshot_from_current_graph(
-            db=self.db,
-            room_id=room_id,
         )
 
         self.db.commit()
 
         logger.info(
-            "[edge_delete_saved] room_id=%s | user_id=%s | edge_id=%s",
+            "[edge_delete_saved] room_id=%s | user_id=%s | edge_id=%s | graph_snapshot_id=%s",
             room_id,
             user_id,
             edge_id,
+            graph_snapshot.graph_snapshot_id,
         )
 
     # =========================
@@ -731,9 +709,36 @@ class GraphInteractionService:
 
         return edge
 
+    def _validate_edge_create_policy(
+        self,
+        *,
+        from_node: Node,
+        to_node: Node,
+    ) -> None:
+        from_type = self._node_type_value(from_node)
+        to_type = self._node_type_value(to_node)
+
+        is_part_property_edge = (
+            from_type == NodeType.PART.value
+            and to_type == NodeType.PROPERTY.value
+        )
+        is_part_reference_edge = (
+            from_type == NodeType.PART.value
+            and to_type == NodeType.REFERENCE.value
+        )
+
+        if is_part_property_edge or is_part_reference_edge:
+            return
+
+        if from_node.sub_graph_id != to_node.sub_graph_id:
+            raise ValueError(
+                "[GRAPH409] Cannot create non PART-PROPERTY edge between nodes in different sub_graphs"
+            )
+
     # =========================
     # Payload helpers
     # =========================
+
     def _parse_optional_uuid_payload(
         self,
         *,
@@ -768,6 +773,41 @@ class GraphInteractionService:
                 f"[GRAPH400] Invalid UUID field: {key}={payload.get(key)}"
             )
 
+    def _parse_optional_node_type(
+        self,
+        *,
+        payload: dict,
+    ):
+        value = payload.get("node_type")
+
+        if value is None or value == "":
+            return None
+
+        try:
+            return NodeType(str(value))
+        except ValueError:
+            try:
+                return NodeType[str(value)]
+            except KeyError:
+                raise ValueError(f"[GRAPH400] Invalid node_type: {value}")
+
+    def _parse_position_payload(
+        self,
+        *,
+        payload: dict,
+    ) -> tuple[float, float, float]:
+        position = payload.get("position")
+
+        if not isinstance(position, list) or len(position) != 3:
+            raise ValueError("[GRAPH400] Field must be array of length 3: position")
+
+        try:
+            return float(position[0]), float(position[1]), float(position[2])
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"[GRAPH400] Position values must be numbers: position={position}"
+            )
+
     def _get_required_dict(
         self,
         *,
@@ -800,6 +840,20 @@ class GraphInteractionService:
 
         return str(value)
 
+    def _get_optional_str(
+        self,
+        *,
+        payload: dict,
+        key: str,
+    ) -> str | None:
+        value = payload.get(key)
+
+        if value is None:
+            return None
+
+        text = str(value).strip()
+        return text if text else None
+
     def _get_required_float(
         self,
         data: dict,
@@ -814,3 +868,21 @@ class GraphInteractionService:
             raise ValueError(
                 f"[GRAPH400] Position field must be number: {key}={data.get(key)}"
             )
+
+    def _node_position(
+        self,
+        *,
+        node: Node,
+    ) -> list[float | None]:
+        return [
+            float(node.position_x) if node.position_x is not None else None,
+            float(node.position_y) if node.position_y is not None else None,
+            float(node.position_z) if node.position_z is not None else None,
+        ]
+
+    def _node_type_value(self, node: Node) -> str:
+        node_type = node.node_type
+        return node_type.value if hasattr(node_type, "value") else str(node_type)
+
+    def _node_type_value_from_enum(self, node_type) -> str:
+        return node_type.value if hasattr(node_type, "value") else str(node_type)
