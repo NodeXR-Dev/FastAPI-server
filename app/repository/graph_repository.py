@@ -3,7 +3,7 @@ from datetime import datetime
 import json
 from uuid import UUID
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.model.graph import SubGraph, Node, Edge, GraphSnapshot, GraphEvent
@@ -1037,3 +1037,28 @@ class GraphRepository:
 
         chain.reverse()
         return chain
+    
+    def find_history_snapshots_by_room_id(
+        self,
+        *,
+        db: Session,
+        room_id: UUID,
+    ) -> list[tuple[GraphEvent, GraphSnapshot]]:
+        stmt = (
+            select(GraphEvent, GraphSnapshot)
+            .join(
+                GraphSnapshot,
+                GraphEvent.graph_snapshot_id == GraphSnapshot.graph_snapshot_id,
+            )
+            .where(
+                GraphEvent.room_id == room_id,
+                GraphEvent.graph_snapshot_id.is_not(None),
+                GraphEvent.event_type != GraphEventType.NODE_MOVE,
+            )
+            .order_by(
+                GraphEvent.created_at.asc(),
+                GraphEvent.graph_event_id.asc(),
+            )
+        )
+
+        return db.execute(stmt).all()
