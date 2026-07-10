@@ -1,3 +1,6 @@
+# app/api/history/service/history_service.py
+
+import json
 from uuid import UUID
 from typing import Any
 
@@ -33,21 +36,20 @@ class HistoryService:
 
             seen_snapshot_ids.add(graph_snapshot.graph_snapshot_id)
 
-            snapshot_data = graph_snapshot.snapshot_data or {}
+            snapshot_data = self._parse_snapshot_data(
+                graph_snapshot.snapshot_data,
+            )
 
-            if not isinstance(snapshot_data, dict):
+            if snapshot_data is None:
                 continue
 
             history_item = dict(snapshot_data)
 
-            # snapshot_data 안에 room_id가 들어있더라도 응답 구조상 result.room_id로만 내려주기
             history_item.pop("room_id", None)
 
-            # graph_version은 snapshot_data에 없으면 graph_snapshots 컬럼에서 보강
             if "graph_version" not in history_item:
-                history_item["graph_version"] = graph_snapshot.graph_version
+                history_item["graph_version"] = graph_snapshot.version
 
-            # 응답 예시 구조를 안정적으로 맞추기 위한 기본값
             history_item.setdefault("core_2d_image", None)
             history_item.setdefault("sub_graphs", [])
 
@@ -57,3 +59,24 @@ class HistoryService:
             "room_id": room_id,
             "history": history,
         }
+
+    def _parse_snapshot_data(
+        self,
+        snapshot_data: Any,
+    ) -> dict[str, Any] | None:
+        if snapshot_data is None:
+            return None
+
+        if isinstance(snapshot_data, dict):
+            return snapshot_data
+
+        if isinstance(snapshot_data, str):
+            try:
+                parsed = json.loads(snapshot_data)
+            except json.JSONDecodeError:
+                return None
+
+            if isinstance(parsed, dict):
+                return parsed
+
+        return None

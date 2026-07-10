@@ -22,7 +22,7 @@ def get_history_service() -> HistoryService:
     )
 
 
-@router.get("")
+@router.post("")
 def get_graph_history(
     request: HistoryRequest = Body(...),
     db: Session = Depends(get_db),
