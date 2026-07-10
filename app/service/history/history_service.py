@@ -1,5 +1,3 @@
-# app/api/history/service/history_service.py
-
 import json
 from uuid import UUID
 from typing import Any
