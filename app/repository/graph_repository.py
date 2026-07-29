@@ -155,6 +155,7 @@ class GraphRepository:
         version: int,
         nodes: list[Node],
         edges: list[Edge],
+        core_2d_image: dict | None = None,
     ) -> dict:
         """
         GraphSnapshot.snapshot_data에 저장할 JSON dict를 만든다.
@@ -223,7 +224,9 @@ class GraphRepository:
 
         return {
             "graph_version": version,
-            "core_2d_image": self._build_core_2d_image_snapshot(),
+            "core_2d_image": self._build_core_2d_image_snapshot(
+                core_2d_image=core_2d_image,
+            ),
             "sub_graphs": [
                 {
                     "sub_graph_id": str(sub_graph_id),
@@ -528,12 +531,33 @@ class GraphRepository:
             "used_in_generation": used_in_generation,
         }
 
-    def _build_core_2d_image_snapshot(self) -> dict | None:
-        """
-        현재 업로드된 repository 코드만으로는 core 2D asset을 조회할 수 있는 관계가 없다.
-        Asset/Feature/Room 모델 연결이 확정되면 여기서 최신 core image를 조회해 채우면 된다.
-        """
-        return None
+    def _build_core_2d_image_snapshot(
+        self,
+        *,
+        core_2d_image: dict | None,
+    ) -> dict | None:
+        return dict(core_2d_image) if core_2d_image is not None else None
+
+    def _find_latest_core_2d_image_snapshot(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+    ) -> dict | None:
+        latest_snapshot = self.find_latest_graph_snapshot_by_room_id(
+            db=db,
+            room_id=room_id,
+        )
+
+        if latest_snapshot is None:
+            return None
+
+        snapshot_data = self.load_snapshot_data(
+            graph_snapshot=latest_snapshot,
+        )
+        core_2d_image = snapshot_data.get("core_2d_image")
+
+        return core_2d_image if isinstance(core_2d_image, dict) else None
 
     def _build_node_data_snapshot(
         self,
@@ -593,6 +617,10 @@ class GraphRepository:
             version=latest_version,
             nodes=all_nodes,
             edges=all_edges,
+            core_2d_image=self._find_latest_core_2d_image_snapshot(
+                db=db,
+                room_id=room_id,
+            ),
         )
 
     def find_active_node_by_id(
@@ -980,6 +1008,7 @@ class GraphRepository:
         db: Session,
         *,
         room_id: UUID,
+        core_2d_image: dict | None = None,
     ) -> GraphSnapshot:
         all_nodes, all_edges = self.find_graph_by_room_id(
             db=db,
@@ -995,6 +1024,14 @@ class GraphRepository:
             version=next_version,
             nodes=all_nodes,
             edges=all_edges,
+            core_2d_image=(
+                core_2d_image
+                if core_2d_image is not None
+                else self._find_latest_core_2d_image_snapshot(
+                    db=db,
+                    room_id=room_id,
+                )
+            ),
         )
 
         graph_snapshot = GraphSnapshot(
@@ -1065,6 +1102,11 @@ class GraphRepository:
         db: Session,
         room_id: UUID,
     ) -> list[tuple[GraphEvent, GraphSnapshot]]:
+        """
+        Snapshot이 연결된 모든 graph event를 시간순으로 반환한다.
+        위치만 바뀌고 snapshot을 생성하지 않는 NODE_MOVE만 제외하므로
+        GENERATE_2D에 연결된 snapshot도 히스토리에 포함된다.
+        """
         stmt = (
             select(GraphEvent, GraphSnapshot)
             .join(
