@@ -348,24 +348,32 @@ class GraphInteractionService:
 
         x, y, z = self._parse_position_payload(payload=payload)
         requested_node_type = self._parse_optional_node_type(payload=payload)
+        node_type = requested_node_type or NodeType.PROPERTY
 
         edge: Edge | None = None
 
-        
-        parent_node = self._get_active_node_or_raise(
-            room_id=room_id,
-            node_id=parent_node_id,
-        )
+        if parent_node_id is None:
+            if node_type == NodeType.PROPERTY:
+                sub_graph = self.graph_repository.create_sub_graph(
+                    db=self.db,
+                    room_id=room_id,
+                )
+                sub_graph_id = sub_graph.sub_graph_id
+            else:
+                sub_graph_id = None
+        else:
+            parent_node = self._get_active_node_or_raise(
+                room_id=room_id,
+                node_id=parent_node_id,
+            )
+            resolved_sub_graph_id = parent_node.sub_graph_id
 
-        resolved_sub_graph_id = parent_node.sub_graph_id
+            if sub_graph_id is not None and sub_graph_id != resolved_sub_graph_id:
+                raise ValueError(
+                    "[GRAPH400] sub_graph_id does not match parent_node's sub_graph_id"
+                )
 
-        if sub_graph_id is not None and sub_graph_id != resolved_sub_graph_id:
-            raise ValueError(
-                "[GRAPH400] sub_graph_id does not match parent_node's sub_graph_id"
-        )
-
-        sub_graph_id = resolved_sub_graph_id
-        node_type = requested_node_type or NodeType.PROPERTY
+            sub_graph_id = resolved_sub_graph_id
 
         logger.info(
             "[node_create_payload_parsed] room_id=%s | user_id=%s | job_id=%s | parent_node_id=%s | sub_graph_id=%s | node_text=%s | node_type=%s | position=%s",
