@@ -187,6 +187,14 @@ class GraphRepository:
             nodes=nodes,
             edges=active_edges,
         )
+        attached_part_node_ids = {
+            edge.from_node_id
+            for edge in active_edges
+            if self._is_part_property_edge(
+                from_node=node_by_id[edge.from_node_id],
+                to_node=node_by_id[edge.to_node_id],
+            )
+        }
 
         nodes_by_sub_graph_id: dict[UUID, list[Node]] = defaultdict(list)
         edges_by_sub_graph_id: dict[UUID, list[Edge]] = defaultdict(list)
@@ -221,6 +229,7 @@ class GraphRepository:
                     "sub_graph_id": str(sub_graph_id),
                     "root_node_id": self._resolve_root_node_id(
                         nodes=nodes_by_sub_graph_id.get(sub_graph_id, []),
+                        excluded_root_node_ids=attached_part_node_ids,
                     ),
                     "nodes": [
                         self._build_node_snapshot(
@@ -405,10 +414,12 @@ class GraphRepository:
         self,
         *,
         nodes: list[Node],
+        excluded_root_node_ids: set[UUID] | None = None,
     ) -> str | None:
         if not nodes:
             return None
 
+        excluded_root_node_ids = excluded_root_node_ids or set()
         node_by_id = {
             node.node_id: node
             for node in nodes
@@ -419,6 +430,7 @@ class GraphRepository:
                 node
                 for node in nodes
                 if node.parent_node_id is None
+                and node.node_id not in excluded_root_node_ids
             ),
             None,
         )
@@ -664,6 +676,15 @@ class GraphRepository:
         text: str,
     ) -> Node:
         node.node_text = text
+        return node
+
+    def update_node_sub_graph(
+        self,
+        *,
+        node: Node,
+        sub_graph_id: UUID | None,
+    ) -> Node:
+        node.sub_graph_id = sub_graph_id
         return node
 
     def soft_delete_node(

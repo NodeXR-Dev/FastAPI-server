@@ -24,6 +24,16 @@ class ResponseCode(str, Enum):
     # Node
     # =========================
     NODE404 = "NODE404" # 노드 객체 없음
+
+    # =========================
+    # Part Node
+    # =========================
+    PART_NODE200 = "PART_NODE200"  # 파트 노드 생성 성공
+    PART_NODE201 = "PART_NODE201"  # 파트 노드 수정 성공
+    PART_NODE202 = "PART_NODE202"  # 파트 노드 삭제 성공
+
+    PART_NODE400 = "PART_NODE400"  # 잘못된 파트 노드 요청
+    PART_NODE404 = "PART_NODE404"  # 파트 노드 없음
     
     # =========================
     # Room
@@ -87,6 +97,12 @@ RESPONSE_MESSAGES = {
     ResponseCode.UTT404: "해당 발화 객체가 존재하지 않습니다.",
     
     ResponseCode.NODE404: "해당 노드 객체가 존재하지 않습니다.",
+
+    ResponseCode.PART_NODE200: "파트 노드 생성 성공",
+    ResponseCode.PART_NODE201: "파트 노드 수정 성공",
+    ResponseCode.PART_NODE202: "파트 노드 삭제 성공",
+    ResponseCode.PART_NODE400: "잘못된 파트 노드 요청입니다.",
+    ResponseCode.PART_NODE404: "파트 노드를 찾을 수 없습니다.",
     
     ResponseCode.ROOM200: "회의실 생성 성공",
     ResponseCode.ROOM201: "회의실 목록 조회 성공",
