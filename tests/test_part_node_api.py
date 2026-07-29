@@ -210,6 +210,145 @@ def test_shared_independent_create_does_not_create_sub_graph_and_rolls_back_on_f
     db.commit.assert_not_called()
 
 
+def test_keyboard_property_create_without_parent_creates_new_sub_graph():
+    room_id = uuid4()
+    job_id = uuid4()
+    sub_graph_id = uuid4()
+    node = SimpleNamespace(
+        node_id=uuid4(),
+        node_text="material",
+        node_type=NodeType.PROPERTY,
+    )
+    snapshot = SimpleNamespace(graph_snapshot_id=uuid4())
+    db = Mock()
+    service = GraphInteractionService(db)
+    repository = Mock()
+    repository.create_sub_graph.return_value = SimpleNamespace(
+        sub_graph_id=sub_graph_id,
+    )
+    repository.create_node.return_value = node
+    repository.create_graph_snapshot_from_current_graph.return_value = snapshot
+    service.graph_repository = repository
+
+    result = asyncio.run(
+        service._handle_node_save(
+            room_id=room_id,
+            user_id=None,
+            payload={
+                "job_id": str(job_id),
+                "parent_node_id": None,
+                "sub_graph_id": None,
+                "node_text": "material",
+                "node_type": NodeType.PROPERTY.value,
+                "position": [1.0, 2.0, 3.0],
+            },
+        )
+    )
+
+    repository.create_sub_graph.assert_called_once_with(
+        db=db,
+        room_id=room_id,
+    )
+    repository.find_active_node_by_id.assert_not_called()
+    assert repository.create_node.call_args.kwargs["sub_graph_id"] == sub_graph_id
+    assert repository.create_node.call_args.kwargs["parent_node_id"] is None
+    assert repository.create_node.call_args.kwargs["node_type"] == NodeType.PROPERTY
+    repository.create_edge.assert_not_called()
+    repository.create_graph_snapshot_from_current_graph.assert_called_once_with(
+        db=db,
+        room_id=room_id,
+    )
+    repository.create_graph_event.assert_called_once()
+    event_payload = repository.create_graph_event.call_args.kwargs["payload"]
+    assert event_payload["sub_graph_id"] == str(sub_graph_id)
+    db.commit.assert_called_once()
+    assert result["result"]["node_id"] == str(node.node_id)
+
+
+def test_keyboard_property_create_without_parent_rolls_back_new_sub_graph_on_failure():
+    room_id = uuid4()
+    sub_graph_id = uuid4()
+    db = Mock()
+    service = GraphInteractionService(db)
+    repository = Mock()
+    repository.create_sub_graph.return_value = SimpleNamespace(
+        sub_graph_id=sub_graph_id,
+    )
+    repository.create_node.side_effect = RuntimeError("node create failed")
+    service.graph_repository = repository
+
+    with pytest.raises(RuntimeError, match="node create failed"):
+        asyncio.run(
+            service.handle_graph_interaction(
+                event_type="NODE_CREATE",
+                room_id=room_id,
+                user_id=None,
+                payload={
+                    "job_id": str(uuid4()),
+                    "parent_node_id": None,
+                    "node_text": "material",
+                    "node_type": NodeType.PROPERTY.value,
+                    "position": [1.0, 2.0, 3.0],
+                },
+            )
+        )
+
+    repository.create_sub_graph.assert_called_once_with(
+        db=db,
+        room_id=room_id,
+    )
+    db.rollback.assert_called_once()
+    db.commit.assert_not_called()
+
+
+def test_keyboard_property_create_with_parent_inherits_parent_sub_graph():
+    room_id = uuid4()
+    parent_node = SimpleNamespace(
+        node_id=uuid4(),
+        sub_graph_id=uuid4(),
+    )
+    node = SimpleNamespace(
+        node_id=uuid4(),
+        node_text="material",
+        node_type=NodeType.PROPERTY,
+    )
+    edge = SimpleNamespace(edge_id=uuid4())
+    snapshot = SimpleNamespace(graph_snapshot_id=uuid4())
+    db = Mock()
+    service = GraphInteractionService(db)
+    repository = Mock()
+    repository.find_active_node_by_id.return_value = parent_node
+    repository.create_node.return_value = node
+    repository.create_edge.return_value = edge
+    repository.create_graph_snapshot_from_current_graph.return_value = snapshot
+    service.graph_repository = repository
+
+    asyncio.run(
+        service._handle_node_save(
+            room_id=room_id,
+            user_id=None,
+            payload={
+                "job_id": str(uuid4()),
+                "parent_node_id": str(parent_node.node_id),
+                "node_text": "material",
+                "node_type": NodeType.PROPERTY.value,
+                "position": [1.0, 2.0, 3.0],
+            },
+        )
+    )
+
+    repository.create_sub_graph.assert_not_called()
+    assert (
+        repository.create_node.call_args.kwargs["sub_graph_id"]
+        == parent_node.sub_graph_id
+    )
+    assert (
+        repository.create_edge.call_args.kwargs["sub_graph_id"]
+        == parent_node.sub_graph_id
+    )
+    db.commit.assert_called_once()
+
+
 def test_part_property_edge_assigns_part_to_property_sub_graph():
     room_id = uuid4()
     part_node = SimpleNamespace(
