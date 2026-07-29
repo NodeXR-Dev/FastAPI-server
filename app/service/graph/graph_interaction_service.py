@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.core.logger import get_logger
-from app.model.graph import Node, Edge, GraphSnapshot
+from app.model.graph import Node, Edge
 from app.model.enum import GraphEventType, NodeType
 from app.repository.graph_repository import GraphRepository
 
@@ -16,6 +16,219 @@ class GraphInteractionService:
     def __init__(self, db: Session):
         self.db = db
         self.graph_repository = GraphRepository()
+
+    def create_independent_node(
+        self,
+        *,
+        room_id: UUID,
+        user_id: UUID | None,
+        node_text: str,
+        node_type: NodeType,
+        position: tuple[float, float, float],
+    ) -> Node:
+        """
+        sub graph와 parent가 없는 독립 node를 생성한다.
+        Node, snapshot, event는 하나의 service transaction으로 저장한다.
+        """
+        try:
+            node = self.graph_repository.create_node(
+                db=self.db,
+                room_id=room_id,
+                sub_graph_id=None,
+                parent_node_id=None,
+                node_text=node_text,
+                node_type=node_type,
+                position_x=position[0],
+                position_y=position[1],
+                position_z=position[2],
+            )
+
+            graph_snapshot = self.graph_repository.create_graph_snapshot_from_current_graph(
+                db=self.db,
+                room_id=room_id,
+            )
+
+            self.graph_repository.create_graph_event(
+                db=self.db,
+                room_id=room_id,
+                user_id=user_id,
+                event_type=GraphEventType.NODE_CREATE,
+                node_id=node.node_id,
+                graph_snapshot_id=graph_snapshot.graph_snapshot_id,
+                payload={
+                    "interaction_type": "NODE_CREATE",
+                    "parent_node_id": None,
+                    "sub_graph_id": None,
+                    "node_text": node.node_text,
+                    "node_type": self._node_type_value(node),
+                    "position": list(position),
+                    "created_node_id": str(node.node_id),
+                    "created_edge_id": None,
+                    "graph_snapshot_id": str(graph_snapshot.graph_snapshot_id),
+                },
+            )
+
+            graph_snapshot_id = graph_snapshot.graph_snapshot_id
+            self.db.commit()
+
+            logger.info(
+                "[independent_node_create_saved] room_id=%s | user_id=%s | node_id=%s | graph_snapshot_id=%s",
+                room_id,
+                user_id,
+                node.node_id,
+                graph_snapshot_id,
+            )
+
+            return node
+
+        except Exception:
+            self.db.rollback()
+            raise
+
+    def update_node_text(
+        self,
+        *,
+        room_id: UUID,
+        user_id: UUID | None,
+        node_id: UUID,
+        text: str,
+    ) -> Node:
+        try:
+            node = self._get_active_node_or_raise(
+                room_id=room_id,
+                node_id=node_id,
+            )
+            before_text = node.node_text
+
+            self.graph_repository.update_node_text(
+                node=node,
+                text=text,
+            )
+            self.db.flush()
+
+            graph_snapshot = self.graph_repository.create_graph_snapshot_from_current_graph(
+                db=self.db,
+                room_id=room_id,
+            )
+
+            self.graph_repository.create_graph_event(
+                db=self.db,
+                room_id=room_id,
+                user_id=user_id,
+                node_id=node.node_id,
+                event_type=GraphEventType.NODE_TEXT_UPDATE,
+                graph_snapshot_id=graph_snapshot.graph_snapshot_id,
+                payload={
+                    "interaction_type": "NODE_TEXT_UPDATE",
+                    "node_id": str(node.node_id),
+                    "before_text": before_text,
+                    "after_text": text,
+                    "graph_snapshot_id": str(graph_snapshot.graph_snapshot_id),
+                },
+            )
+
+            graph_snapshot_id = graph_snapshot.graph_snapshot_id
+            self.db.commit()
+
+            logger.info(
+                "[node_text_update_saved] room_id=%s | user_id=%s | node_id=%s | graph_snapshot_id=%s",
+                room_id,
+                user_id,
+                node_id,
+                graph_snapshot_id,
+            )
+
+            return node
+
+        except Exception:
+            self.db.rollback()
+            raise
+
+    def delete_node(
+        self,
+        *,
+        room_id: UUID,
+        user_id: UUID | None,
+        node_id: UUID,
+    ) -> Node:
+        try:
+            node = self._get_active_node_or_raise(
+                room_id=room_id,
+                node_id=node_id,
+            )
+            deleted_at = datetime.now(timezone.utc)
+
+            child_nodes = self.graph_repository.find_active_child_nodes_recursively(
+                db=self.db,
+                room_id=room_id,
+                parent_node_id=node.node_id,
+            )
+            nodes_to_delete = [node, *child_nodes]
+            connected_edges = self.graph_repository.find_active_edges_connected_to_nodes(
+                db=self.db,
+                room_id=room_id,
+                node_ids=[target_node.node_id for target_node in nodes_to_delete],
+            )
+
+            self.graph_repository.soft_delete_nodes(
+                nodes=nodes_to_delete,
+                deleted_at=deleted_at,
+            )
+            self.graph_repository.soft_delete_edges(
+                edges=connected_edges,
+                deleted_at=deleted_at,
+            )
+            self.db.flush()
+
+            graph_snapshot = self.graph_repository.create_graph_snapshot_from_current_graph(
+                db=self.db,
+                room_id=room_id,
+            )
+
+            self.graph_repository.create_graph_event(
+                db=self.db,
+                room_id=room_id,
+                user_id=user_id,
+                node_id=node.node_id,
+                event_type=GraphEventType.NODE_DELETE,
+                graph_snapshot_id=graph_snapshot.graph_snapshot_id,
+                payload={
+                    "interaction_type": "NODE_DELETE",
+                    "node_id": str(node.node_id),
+                    "deleted_child_node_ids": [
+                        str(child_node.node_id)
+                        for child_node in child_nodes
+                    ],
+                    "deleted_node_ids": [
+                        str(target_node.node_id)
+                        for target_node in nodes_to_delete
+                    ],
+                    "deleted_edge_ids": [
+                        str(edge.edge_id)
+                        for edge in connected_edges
+                    ],
+                    "graph_snapshot_id": str(graph_snapshot.graph_snapshot_id),
+                },
+            )
+
+            graph_snapshot_id = graph_snapshot.graph_snapshot_id
+            self.db.commit()
+
+            logger.info(
+                "[node_delete_saved] room_id=%s | user_id=%s | node_id=%s | deleted_child_nodes=%s | deleted_edges=%s | graph_snapshot_id=%s",
+                room_id,
+                user_id,
+                node_id,
+                len(child_nodes),
+                len(connected_edges),
+                graph_snapshot_id,
+            )
+
+            return node
+
+        except Exception:
+            self.db.rollback()
+            raise
 
     async def handle_graph_interaction(
         self,
@@ -329,47 +542,11 @@ class GraphInteractionService:
         if not text:
             raise ValueError("[GRAPH400] node text must not be blank")
 
-        node = self._get_active_node_or_raise(
-            room_id=room_id,
-            node_id=node_id,
-        )
-
-        before_text = node.node_text
-
-        self.graph_repository.update_node_text(
-            node=node,
-            text=text,
-        )
-
-        graph_snapshot = self.graph_repository.create_graph_snapshot_from_current_graph(
-            db=self.db,
-            room_id=room_id,
-        )
-
-        self.graph_repository.create_graph_event(
-            db=self.db,
+        self.update_node_text(
             room_id=room_id,
             user_id=user_id,
-            node_id=node.node_id,
-            event_type=GraphEventType.NODE_TEXT_UPDATE,
-            graph_snapshot_id=graph_snapshot.graph_snapshot_id,
-            payload={
-                "interaction_type": "NODE_TEXT_UPDATE",
-                "node_id": str(node.node_id),
-                "before_text": before_text,
-                "after_text": text,
-                "graph_snapshot_id": str(graph_snapshot.graph_snapshot_id),
-            },
-        )
-
-        self.db.commit()
-
-        logger.info(
-            "[node_text_update_saved] room_id=%s | user_id=%s | node_id=%s | graph_snapshot_id=%s",
-            room_id,
-            user_id,
-            node_id,
-            graph_snapshot.graph_snapshot_id,
+            node_id=node_id,
+            text=text,
         )
 
     # =========================
@@ -388,86 +565,10 @@ class GraphInteractionService:
             key="node_id",
         )
 
-        node = self._get_active_node_or_raise(
-            room_id=room_id,
-            node_id=node_id,
-        )
-
-        deleted_at = datetime.now(timezone.utc)
-
-        child_nodes = self.graph_repository.find_active_child_nodes_recursively(
-            db=self.db,
-            room_id=room_id,
-            parent_node_id=node.node_id,
-        )
-
-        nodes_to_delete = [
-            node,
-            *child_nodes,
-        ]
-
-        node_ids_to_delete = [
-            target_node.node_id
-            for target_node in nodes_to_delete
-        ]
-
-        connected_edges = self.graph_repository.find_active_edges_connected_to_nodes(
-            db=self.db,
-            room_id=room_id,
-            node_ids=node_ids_to_delete,
-        )
-
-        self.graph_repository.soft_delete_nodes(
-            nodes=nodes_to_delete,
-            deleted_at=deleted_at,
-        )
-
-        self.graph_repository.soft_delete_edges(
-            edges=connected_edges,
-            deleted_at=deleted_at,
-        )
-
-        graph_snapshot = self.graph_repository.create_graph_snapshot_from_current_graph(
-            db=self.db,
-            room_id=room_id,
-        )
-
-        self.graph_repository.create_graph_event(
-            db=self.db,
+        self.delete_node(
             room_id=room_id,
             user_id=user_id,
-            node_id=node.node_id,
-            event_type=GraphEventType.NODE_DELETE,
-            graph_snapshot_id=graph_snapshot.graph_snapshot_id,
-            payload={
-                "interaction_type": "NODE_DELETE",
-                "node_id": str(node.node_id),
-                "deleted_child_node_ids": [
-                    str(child_node.node_id)
-                    for child_node in child_nodes
-                ],
-                "deleted_node_ids": [
-                    str(target_node.node_id)
-                    for target_node in nodes_to_delete
-                ],
-                "deleted_edge_ids": [
-                    str(edge.edge_id)
-                    for edge in connected_edges
-                ],
-                "graph_snapshot_id": str(graph_snapshot.graph_snapshot_id),
-            },
-        )
-
-        self.db.commit()
-
-        logger.info(
-            "[node_delete_saved] room_id=%s | user_id=%s | node_id=%s | deleted_child_nodes=%s | deleted_edges=%s | graph_snapshot_id=%s",
-            room_id,
-            user_id,
-            node_id,
-            len(child_nodes),
-            len(connected_edges),
-            graph_snapshot.graph_snapshot_id,
+            node_id=node_id,
         )
 
     # =========================
@@ -533,11 +634,19 @@ class GraphInteractionService:
             key="label",
         )
 
+        if self._is_part_property_edge(
+            from_node=from_node,
+            to_node=to_node,
+        ):
+            self.graph_repository.update_node_sub_graph(
+                node=from_node,
+                sub_graph_id=to_node.sub_graph_id,
+            )
+
         edge = self.graph_repository.create_edge(
             db=self.db,
             room_id=room_id,
-            # PART -> PROPERTY cross edge는 서로 다른 sub_graph를 연결할 수 있다.
-            # DB에는 Unity가 보낸 from/to를 그대로 저장하고, snapshot에서만 to_node_id를 root로 변환한다.
+            # PART는 PROPERTY에 연결되는 시점부터 해당 PROPERTY의 sub graph에 포함된다.
             sub_graph_id=from_node.sub_graph_id,
             from_node_id=from_node_id,
             to_node_id=to_node_id,
@@ -637,6 +746,17 @@ class GraphInteractionService:
             edge=edge,
             deleted_at=deleted_at,
         )
+        self.db.flush()
+
+        if self._is_part_property_edge(
+            from_node=from_node,
+            to_node=to_node,
+        ):
+            self._reassign_part_sub_graph_after_edge_delete(
+                room_id=room_id,
+                part_node=from_node,
+            )
+            self.db.flush()
 
         graph_snapshot = self.graph_repository.create_graph_snapshot_from_current_graph(
             db=self.db,
@@ -734,6 +854,70 @@ class GraphInteractionService:
             raise ValueError(
                 "[GRAPH409] Cannot create non PART-PROPERTY edge between nodes in different sub_graphs"
             )
+
+    def _is_part_property_edge(
+        self,
+        *,
+        from_node: Node,
+        to_node: Node,
+    ) -> bool:
+        return (
+            self._node_type_value(from_node) == NodeType.PART.value
+            and self._node_type_value(to_node) == NodeType.PROPERTY.value
+        )
+
+    def _reassign_part_sub_graph_after_edge_delete(
+        self,
+        *,
+        room_id: UUID,
+        part_node: Node,
+    ) -> None:
+        remaining_edges = self.graph_repository.find_active_edges_connected_to_node(
+            db=self.db,
+            room_id=room_id,
+            node_id=part_node.node_id,
+        )
+        remaining_property_nodes: list[Node] = []
+
+        for remaining_edge in remaining_edges:
+            if remaining_edge.from_node_id != part_node.node_id:
+                continue
+
+            target_node = self.graph_repository.find_active_node_by_id(
+                db=self.db,
+                room_id=room_id,
+                node_id=remaining_edge.to_node_id,
+            )
+
+            if (
+                target_node is not None
+                and self._node_type_value(target_node) == NodeType.PROPERTY.value
+            ):
+                remaining_property_nodes.append(target_node)
+
+        current_sub_graph_property = next(
+            (
+                property_node
+                for property_node in remaining_property_nodes
+                if property_node.sub_graph_id == part_node.sub_graph_id
+            ),
+            None,
+        )
+        fallback_property = (
+            remaining_property_nodes[0]
+            if remaining_property_nodes
+            else None
+        )
+        resolved_property = current_sub_graph_property or fallback_property
+
+        self.graph_repository.update_node_sub_graph(
+            node=part_node,
+            sub_graph_id=(
+                resolved_property.sub_graph_id
+                if resolved_property is not None
+                else None
+            ),
+        )
 
     # =========================
     # Payload helpers
