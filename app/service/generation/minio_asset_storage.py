@@ -141,6 +141,21 @@ class MinioAssetStorage:
         )
         return True
 
+    def validate_generated_image_url(self, *, image_url: str) -> bool:
+        object_name = self._resolve_managed_object_name(image_url=image_url)
+        return object_name is not None and object_name.startswith("2d/")
+
+    def download_generated_image(self, *, image_url: str) -> bytes:
+        object_name = self._resolve_managed_object_name(image_url=image_url)
+
+        if object_name is None or not object_name.startswith("2d/"):
+            raise ValueError("관리되는 2D Asset URL이 아닙니다.")
+
+        return self.minio_manager.download_bytes(
+            bucket_name=settings.MINIO_BUCKET_2D_ASSETS,
+            object_name=object_name,
+        )
+
     @staticmethod
     def _resolve_managed_object_name(*, image_url: str) -> str | None:
         base_url = settings.MINIO_PUBLIC_BASE_URL.rstrip("/")

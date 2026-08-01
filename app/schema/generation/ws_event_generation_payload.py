@@ -11,6 +11,14 @@ class Image2DAssetPayload(BaseModel):
     img_url: str
 
 
+class Image2DColorChangedPayload(BaseModel):
+    asset_id: UUID
+    mime_type: str
+    width: int
+    height: int
+    img_url: str
+
+
 class Model3DAssetPayload(BaseModel):
     asset_id: UUID
     mime_type: str

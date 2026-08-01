@@ -47,10 +47,11 @@ class Image2DGenerationService:
         )
 
         try:
-            context = self.prompt_context_builder.build(
+            context = self.prompt_context_builder.build_from_snapshot(
                 db=self.db,
                 room_id=room_id,
-                connections=connections,
+                graph_snapshot_id=graph_snapshot_id,
+                expected_connections=connections,
             )
 
             prompt_text = await self.openai_prompt_client.generate_image_prompt(

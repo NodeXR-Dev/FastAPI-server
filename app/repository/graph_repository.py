@@ -158,6 +158,7 @@ class GraphRepository:
         edges: list[Edge],
         core_2d_image: dict | None = None,
         reference_by_node_id: dict[UUID, Reference] | None = None,
+        generation_context: dict | None = None,
     ) -> dict:
         """
         GraphSnapshot.snapshot_data에 저장할 JSON dict를 만든다.
@@ -225,7 +226,7 @@ class GraphRepository:
             key=str,
         )
 
-        return {
+        snapshot_data = {
             "graph_version": version,
             "core_2d_image": self._build_core_2d_image_snapshot(
                 core_2d_image=core_2d_image,
@@ -264,6 +265,12 @@ class GraphRepository:
                 for sub_graph_id in sub_graph_ids
             ],
         }
+        if generation_context is not None:
+            snapshot_data["_generation_context"] = json.loads(
+                json.dumps(generation_context, ensure_ascii=False, default=str),
+            )
+
+        return snapshot_data
 
     def _resolve_used_in_generation(
         self,
@@ -1101,11 +1108,29 @@ class GraphRepository:
             .first()
         )
 
+    def find_graph_snapshot_by_id(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        graph_snapshot_id: UUID,
+    ) -> GraphSnapshot | None:
+        return (
+            db.query(GraphSnapshot)
+            .filter(
+                GraphSnapshot.room_id == room_id,
+                GraphSnapshot.graph_snapshot_id == graph_snapshot_id,
+            )
+            .first()
+        )
+
     def load_snapshot_data(
         self,
         *,
         graph_snapshot: GraphSnapshot,
     ) -> dict:
+        if isinstance(graph_snapshot.snapshot_data, dict):
+            return graph_snapshot.snapshot_data
         return json.loads(graph_snapshot.snapshot_data)
 
     # =========================
@@ -1118,6 +1143,7 @@ class GraphRepository:
         *,
         room_id: UUID,
         core_2d_image: dict | None = None,
+        generation_context: dict | None = None,
     ) -> GraphSnapshot:
         all_nodes, all_edges = self.find_graph_by_room_id(
             db=db,
@@ -1145,6 +1171,7 @@ class GraphRepository:
                     room_id=room_id,
                 )
             ),
+            generation_context=generation_context,
         )
 
         graph_snapshot = GraphSnapshot(
@@ -1157,6 +1184,48 @@ class GraphRepository:
         db.flush()
 
         return graph_snapshot
+
+    def create_graph_snapshot_from_input_snapshot(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        input_graph_snapshot_id: UUID,
+        core_2d_image: dict,
+    ) -> GraphSnapshot:
+        input_snapshot = self.find_graph_snapshot_by_id(
+            db=db,
+            room_id=room_id,
+            graph_snapshot_id=input_graph_snapshot_id,
+        )
+        if input_snapshot is None:
+            raise ValueError("Generation Input Snapshot을 찾을 수 없습니다.")
+
+        input_snapshot_data = self.load_snapshot_data(
+            graph_snapshot=input_snapshot,
+        )
+        result_snapshot_data = json.loads(
+            json.dumps(input_snapshot_data, ensure_ascii=False, default=str),
+        )
+        next_version = self.get_next_graph_version(
+            db=db,
+            room_id=room_id,
+        )
+        result_snapshot_data["graph_version"] = next_version
+        result_snapshot_data["core_2d_image"] = dict(core_2d_image)
+
+        result_snapshot = GraphSnapshot(
+            room_id=room_id,
+            snapshot_data=json.dumps(
+                result_snapshot_data,
+                ensure_ascii=False,
+                default=str,
+            ),
+            version=next_version,
+        )
+        db.add(result_snapshot)
+        db.flush()
+        return result_snapshot
 
     # =========================
     # 2D Generation Prompt

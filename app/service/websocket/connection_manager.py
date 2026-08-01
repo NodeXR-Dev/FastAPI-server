@@ -169,6 +169,41 @@ class RoomConnectionManager:
 
         return sent
 
+    async def broadcast_to_room(
+        self,
+        *,
+        room_id: UUID,
+        message: dict,
+    ) -> int:
+        room_key = str(room_id)
+        connections = list(self.active_connections.get(room_key, []))
+        disconnected: list[ClientConnection] = []
+        sent_count = 0
+
+        for connection in connections:
+            try:
+                await connection.websocket.send_json(message)
+                sent_count += 1
+            except Exception as error:
+                logger.warning(
+                    "[ws_broadcast_failed] room_id=%s | event_type=%s | error=%s",
+                    room_id,
+                    message.get("event_type"),
+                    str(error),
+                )
+                disconnected.append(connection)
+
+        for connection in disconnected:
+            self.disconnect(room_id, connection.websocket)
+
+        logger.info(
+            "[ws_broadcast_completed] room_id=%s | event_type=%s | sent_count=%s",
+            room_id,
+            message.get("event_type"),
+            sent_count,
+        )
+        return sent_count
+
     #async def broadcast_to_room(
     #    self,
     #    room_id: UUID,

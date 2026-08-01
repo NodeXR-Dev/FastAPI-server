@@ -44,6 +44,7 @@ class HistoryService:
             history_item = dict(snapshot_data)
 
             history_item.pop("room_id", None)
+            history_item.pop("_generation_context", None)
 
             if "graph_version" not in history_item:
                 history_item["graph_version"] = graph_snapshot.version

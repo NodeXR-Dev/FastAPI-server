@@ -9,6 +9,7 @@ from app.core.response.code import ResponseCode, get_message
 from app.model.enum import GraphEventType
 from app.schema.generation.ws_event_generation_payload import (
     Image2DAssetPayload,
+    Image2DColorChangedPayload,
     Model3DAssetPayload,
 )
 from app.schema.graph.response import NodeGraphResponse
@@ -29,6 +30,12 @@ class WSConnectWSEvent(WSEvent):
 class Image2DGeneratedWSEvent(WSEvent):
     event_type: Literal["2D_GENERATED"] = "2D_GENERATED"
     payload: Image2DAssetPayload
+
+
+class Image2DColorChangedWSEvent(BaseModel):
+    event_type: Literal["2D_COLOR_CHANGED"] = "2D_COLOR_CHANGED"
+    room_id: UUID
+    payload: Image2DColorChangedPayload
 
 class Model3DGeneratedWSEvent(WSEvent):
     event_type: Literal["3D_GENERATED"] = "3D_GENERATED"
