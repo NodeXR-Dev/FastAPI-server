@@ -7,6 +7,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.model.graph import SubGraph, Node, Edge, GraphSnapshot, GraphEvent
+from app.model.reference import Reference
 from app.model.memory import NodeUtteranceLink
 from app.model.enum import GraphEventType, NodeType
 from app.schema.graph.response import GraphResponse
@@ -156,6 +157,7 @@ class GraphRepository:
         nodes: list[Node],
         edges: list[Edge],
         core_2d_image: dict | None = None,
+        reference_by_node_id: dict[UUID, Reference] | None = None,
     ) -> dict:
         """
         GraphSnapshot.snapshot_data에 저장할 JSON dict를 만든다.
@@ -171,6 +173,7 @@ class GraphRepository:
           그리고 그 경로의 edge들을 true로 표시한다.
         - 직전 정책 보완 사항에 따라 PART/PROPERTY -> REFERENCE 직접 연결도 true로 표시한다.
         """
+        reference_by_node_id = reference_by_node_id or {}
         node_by_id = {
             node.node_id: node
             for node in nodes
@@ -238,6 +241,7 @@ class GraphRepository:
                         self._build_node_snapshot(
                             node=node,
                             used_in_generation=node.node_id in used_node_ids,
+                            reference=reference_by_node_id.get(node.node_id),
                         )
                         for node in sorted(
                             nodes_by_sub_graph_id.get(sub_graph_id, []),
@@ -483,6 +487,7 @@ class GraphRepository:
         *,
         node: Node,
         used_in_generation: bool,
+        reference: Reference | None = None,
     ) -> dict:
         return {
             "node_id": str(node.node_id),
@@ -495,7 +500,10 @@ class GraphRepository:
             ],
             "parent_node_id": str(node.parent_node_id) if node.parent_node_id else None,
             "used_in_generation": used_in_generation,
-            "data": self._build_node_data_snapshot(node=node),
+            "data": self._build_node_data_snapshot(
+                node=node,
+                reference=reference,
+            ),
         }
 
     def _build_edge_snapshot(
@@ -563,26 +571,44 @@ class GraphRepository:
         self,
         *,
         node: Node,
+        reference: Reference | None = None,
     ) -> dict:
         """
-        Node 모델에 JSON/data 컬럼이 있으면 snapshot에 최대한 반영한다.
-        현재 업로드된 코드 기준으로는 Node의 추가 data 필드가 확인되지 않아 기본 {}를 반환한다.
+        Node 모델에 JSON/data 컬럼이 있으면 snapshot에 최대한 반영하고,
+        REFERENCE node에는 batch 조회한 이미지 metadata를 data로 추가한다.
         """
+        data: dict = {}
+
         for attr_name in ("data", "metadata", "extra_data"):
             value = getattr(node, attr_name, None)
 
             if isinstance(value, dict):
-                return value
+                data.update(value)
+                break
 
             if isinstance(value, str) and value.strip():
                 try:
                     parsed = json.loads(value)
                     if isinstance(parsed, dict):
-                        return parsed
+                        data.update(parsed)
+                        break
                 except json.JSONDecodeError:
                     continue
 
-        return {}
+        if (
+            reference is not None
+            and self._node_type_value(node) == NodeType.REFERENCE.value
+        ):
+            data.update(
+                {
+                    "reference_url": reference.image_url,
+                    "mime_type": reference.mime_type,
+                    "width": reference.width,
+                    "height": reference.height,
+                }
+            )
+
+        return data
 
     def _node_type_value(self, node: Node) -> str:
         node_type = node.node_type
@@ -617,6 +643,10 @@ class GraphRepository:
             version=latest_version,
             nodes=all_nodes,
             edges=all_edges,
+            reference_by_node_id=self.find_references_by_node_ids(
+                db=db,
+                node_ids=[node.node_id for node in all_nodes],
+            ),
             core_2d_image=self._find_latest_core_2d_image_snapshot(
                 db=db,
                 room_id=room_id,
@@ -639,6 +669,85 @@ class GraphRepository:
             )
             .first()
         )
+
+    def find_sub_graph_by_id(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        sub_graph_id: UUID,
+    ) -> SubGraph | None:
+        return (
+            db.query(SubGraph)
+            .filter(
+                SubGraph.room_id == room_id,
+                SubGraph.sub_graph_id == sub_graph_id,
+            )
+            .first()
+        )
+
+    def create_reference(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        node_id: UUID,
+        image_url: str,
+        mime_type: str,
+        width: int,
+        height: int,
+    ) -> Reference:
+        reference = Reference(
+            room_id=room_id,
+            node_id=node_id,
+            query_text=None,
+            image_url=image_url,
+            mime_type=mime_type,
+            width=width,
+            height=height,
+        )
+
+        db.add(reference)
+        db.flush()
+        return reference
+
+    def find_references_by_node_ids(
+        self,
+        db: Session,
+        *,
+        node_ids: list[UUID],
+    ) -> dict[UUID, Reference]:
+        references = self.find_reference_records_by_node_ids(
+            db=db,
+            node_ids=node_ids,
+        )
+        reference_by_node_id: dict[UUID, Reference] = {}
+
+        for reference in references:
+            if reference.node_id is not None:
+                reference_by_node_id.setdefault(reference.node_id, reference)
+
+        return reference_by_node_id
+
+    def find_reference_records_by_node_ids(
+        self,
+        db: Session,
+        *,
+        node_ids: list[UUID],
+    ) -> list[Reference]:
+        if not node_ids:
+            return []
+
+        return (
+            db.query(Reference)
+            .filter(Reference.node_id.in_(node_ids))
+            .order_by(Reference.created_at.desc(), Reference.reference_id.desc())
+            .all()
+        )
+
+    def delete_references(self, *, db: Session, references: list[Reference]) -> None:
+        for reference in references:
+            db.delete(reference)
 
     def create_sub_graph(
         self,
@@ -1024,6 +1133,10 @@ class GraphRepository:
             version=next_version,
             nodes=all_nodes,
             edges=all_edges,
+            reference_by_node_id=self.find_references_by_node_ids(
+                db=db,
+                node_ids=[node.node_id for node in all_nodes],
+            ),
             core_2d_image=(
                 core_2d_image
                 if core_2d_image is not None

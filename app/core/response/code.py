@@ -34,6 +34,13 @@ class ResponseCode(str, Enum):
 
     PART_NODE400 = "PART_NODE400"  # 잘못된 파트 노드 요청
     PART_NODE404 = "PART_NODE404"  # 파트 노드 없음
+
+    # =========================
+    # Reference
+    # =========================
+    REFERENCE201 = "REFERENCE201"  # 레퍼런스 저장 성공
+    REFERENCE400 = "REFERENCE400"  # 잘못된 레퍼런스 요청
+    REFERENCE500 = "REFERENCE500"  # 레퍼런스 저장 오류
     
     # =========================
     # Room
@@ -103,6 +110,10 @@ RESPONSE_MESSAGES = {
     ResponseCode.PART_NODE202: "파트 노드 삭제 성공",
     ResponseCode.PART_NODE400: "잘못된 파트 노드 요청입니다.",
     ResponseCode.PART_NODE404: "파트 노드를 찾을 수 없습니다.",
+
+    ResponseCode.REFERENCE201: "레퍼런스 저장 성공",
+    ResponseCode.REFERENCE400: "잘못된 레퍼런스 요청입니다.",
+    ResponseCode.REFERENCE500: "레퍼런스 저장 중 서버 오류가 발생했습니다.",
     
     ResponseCode.ROOM200: "회의실 생성 성공",
     ResponseCode.ROOM201: "회의실 목록 조회 성공",

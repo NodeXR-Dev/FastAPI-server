@@ -155,6 +155,7 @@ def test_shared_delete_soft_deletes_descendants_edges_and_commits():
     repository.find_active_node_by_id.return_value = root
     repository.find_active_child_nodes_recursively.return_value = [child]
     repository.find_active_edges_connected_to_nodes.return_value = [edge]
+    repository.find_reference_records_by_node_ids.return_value = []
     repository.create_graph_snapshot_from_current_graph.return_value = snapshot
     service.graph_repository = repository
 
