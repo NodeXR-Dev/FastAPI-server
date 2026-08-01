@@ -6,28 +6,26 @@ psycopg[binary]
 alembic
 pgvector
 asyncpg
-asyncpg
 
 pydantic
 pydantic-settings
 python-dotenv
 
 langchain
+langchain-openai
 langchain-community
 langchain-google-genai
-google-genai
-openai
+langgraph
+langsmith
 google-genai
 openai
 sentence-transformers
 transformers
 pillow
-pillow
 
 minio
 httpx
 python-multipart
-python-dotenv
 
 passlib[bcrypt]
 bcrypt==4.0.1
