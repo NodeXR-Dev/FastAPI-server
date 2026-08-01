@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str | None = None
     GEMINI_MODEL_NAME: str = "gemini-3.1-flash-image"
     MESHY_API_KEY: str | None = None
+    MESHY_BASE_URL: str = "https://api.meshy.ai"
+    MESHY_POLL_INTERVAL_SECONDS: float = 5.0
+    MESHY_POLL_TIMEOUT_SECONDS: float = 900.0
+    MESHY_HTTP_TIMEOUT_SECONDS: float = 60.0
     
     EMBEDDING_DIM: int = 1536
     

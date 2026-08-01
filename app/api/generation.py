@@ -14,6 +14,7 @@ from app.repository.graph_repository import GraphRepository
 from app.schema.generation.request import (
     Generate2DFeatureRequest,
     Generate2DGraphRequest,
+    Generate3DRequest,
 )
 from app.schema.generation.color_change_request import (
     ColorChangeMetadataRequest,
@@ -26,6 +27,9 @@ from app.service.generation.image_2d_generation_task_service import (
     Image2DGenerationTaskService,
 )
 from app.service.generation.prompt_context_builder import PromptContextBuilder
+from app.service.generation.model_3d_generation_service import (
+    Model3DGenerationService,
+)
 
 logger = get_logger(__name__)
 
@@ -36,6 +40,42 @@ router = APIRouter(
 image_2d_generation_task_service = Image2DGenerationTaskService()
 image_2d_color_change_service = Image2DColorChangeService()
 prompt_context_builder = PromptContextBuilder()
+model_3d_generation_service = Model3DGenerationService()
+
+
+@router.post(
+    "/3d/generate",
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["3D"],
+)
+def request_3d_generate(
+    request: Generate3DRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    logger.info(
+        "[3d_generation_requested] room_id=%s | source_asset_id=%s",
+        request.room_id,
+        request.asset_id,
+    )
+    model_3d_generation_service.validate_request(
+        db=db,
+        request=request,
+    )
+    background_tasks.add_task(
+        model_3d_generation_service.run,
+        room_id=request.room_id,
+        source_asset_id=request.asset_id,
+    )
+    logger.info(
+        "[3d_generation_task_registered] room_id=%s | source_asset_id=%s",
+        request.room_id,
+        request.asset_id,
+    )
+    return success_response(
+        code=ResponseCode.MODEL_3D200,
+        result={},
+    )
 
 
 @router.post(

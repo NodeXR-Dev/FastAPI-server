@@ -56,6 +56,32 @@ class AssetRepository:
 
         return asset
 
+    def create_3d_asset(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        graph_snapshot_id: UUID | None,
+        file_url: str,
+    ) -> Asset:
+        asset = Asset(
+            room_id=room_id,
+            graph_snapshot_id=graph_snapshot_id,
+            asset_type=AssetType.MODEL_3D,
+            file_url=file_url,
+            prompt_text=None,
+        )
+        db.add(asset)
+        db.flush()
+
+        logger.info(
+            "[create_3d_asset_completed] room_id=%s | asset_id=%s | graph_snapshot_id=%s",
+            room_id,
+            asset.asset_id,
+            graph_snapshot_id,
+        )
+        return asset
+
     def update_graph_snapshot(
         self,
         db: Session,

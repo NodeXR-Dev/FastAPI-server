@@ -91,6 +91,14 @@ class ResponseCode(str, Enum):
     COLOR_CHANGE201 = "2D201"
     COLOR_CHANGE400 = "2D400"
     COLOR_CHANGE404 = "2D404"
+
+    # =========================
+    # 3D Model
+    # =========================
+    MODEL_3D200 = "3D200"
+    MODEL_3D400 = "3D400"
+    MODEL_3D404 = "3D404"
+    MODEL_3D500 = "3D500"
     
     HISTORY200 = "HISTORY200"
     HISTORY400 = "HISTORY400"
@@ -150,6 +158,10 @@ RESPONSE_MESSAGES = {
     ResponseCode.COLOR_CHANGE201: "2D 색상 변경 요청 성공",
     ResponseCode.COLOR_CHANGE400: "잘못된 2D 색상 변경 요청입니다.",
     ResponseCode.COLOR_CHANGE404: "색상 변경에 필요한 리소스를 찾을 수 없습니다.",
+    ResponseCode.MODEL_3D200: "3D 생성 요청 성공",
+    ResponseCode.MODEL_3D400: "잘못된 3D 생성 요청입니다.",
+    ResponseCode.MODEL_3D404: "3D 생성에 필요한 리소스를 찾을 수 없습니다.",
+    ResponseCode.MODEL_3D500: "3D 생성 중 서버 오류가 발생했습니다.",
     
     ResponseCode.HISTORY200 : "노드 그래프 히스토리 조회 성공",
     ResponseCode.HISTORY400 : "노드 그래프 히스토리 조회 요청 실패",
