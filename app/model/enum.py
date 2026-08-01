@@ -74,6 +74,11 @@ class NodeType(str, enum.Enum):
     PART = "PART"
 
 
+class EdgeType(str, enum.Enum):
+    # Edge에는 별도 type 컬럼이 없으므로 기존 reference label 값을 재사용한다.
+    PROPERTY_REFERENCE = "REFERENCES"
+
+
 class AssetType(str, enum.Enum):
     IMAGE_2D = "IMAGE_2D"
     MODEL_3D = "MODEL_3D"

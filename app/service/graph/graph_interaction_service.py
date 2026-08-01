@@ -5,17 +5,24 @@ from sqlalchemy.orm import Session
 
 from app.core.logger import get_logger
 from app.model.graph import Node, Edge
-from app.model.enum import GraphEventType, NodeType
+from app.model.enum import EdgeType, GraphEventType, NodeType
 from app.repository.graph_repository import GraphRepository
+from app.service.generation.minio_asset_storage import MinioAssetStorage
 
 logger = get_logger(__name__)
 
 
 class GraphInteractionService:
 
-    def __init__(self, db: Session):
+    def __init__(
+        self,
+        db: Session,
+        *,
+        minio_asset_storage: MinioAssetStorage | None = None,
+    ):
         self.db = db
         self.graph_repository = GraphRepository()
+        self.minio_asset_storage = minio_asset_storage
 
     def create_independent_node(
         self,
@@ -98,6 +105,10 @@ class GraphInteractionService:
                 room_id=room_id,
                 node_id=node_id,
             )
+            if self._node_type_value(node) == NodeType.REFERENCE.value:
+                raise ValueError(
+                    "[GRAPH409] REFERENCE node text must be managed by the reference workflow"
+                )
             before_text = node.node_text
 
             self.graph_repository.update_node_text(
@@ -156,27 +167,10 @@ class GraphInteractionService:
                 room_id=room_id,
                 node_id=node_id,
             )
-            deleted_at = datetime.now(timezone.utc)
-
-            child_nodes = self.graph_repository.find_active_child_nodes_recursively(
-                db=self.db,
+            deletion = self._soft_delete_node_graph_state(
                 room_id=room_id,
-                parent_node_id=node.node_id,
-            )
-            nodes_to_delete = [node, *child_nodes]
-            connected_edges = self.graph_repository.find_active_edges_connected_to_nodes(
-                db=self.db,
-                room_id=room_id,
-                node_ids=[target_node.node_id for target_node in nodes_to_delete],
-            )
-
-            self.graph_repository.soft_delete_nodes(
-                nodes=nodes_to_delete,
-                deleted_at=deleted_at,
-            )
-            self.graph_repository.soft_delete_edges(
-                edges=connected_edges,
-                deleted_at=deleted_at,
+                node=node,
+                deleted_at=datetime.now(timezone.utc),
             )
             self.db.flush()
 
@@ -197,30 +191,35 @@ class GraphInteractionService:
                     "node_id": str(node.node_id),
                     "deleted_child_node_ids": [
                         str(child_node.node_id)
-                        for child_node in child_nodes
+                        for child_node in deletion["child_nodes"]
                     ],
                     "deleted_node_ids": [
                         str(target_node.node_id)
-                        for target_node in nodes_to_delete
+                        for target_node in deletion["nodes"]
                     ],
                     "deleted_edge_ids": [
                         str(edge.edge_id)
-                        for edge in connected_edges
+                        for edge in deletion["edges"]
                     ],
+                    "deleted_reference_ids": deletion["reference_ids"],
                     "graph_snapshot_id": str(graph_snapshot.graph_snapshot_id),
                 },
             )
 
             graph_snapshot_id = graph_snapshot.graph_snapshot_id
             self.db.commit()
+            self._delete_reference_images_best_effort(
+                room_id=room_id,
+                image_urls=deletion["image_urls"],
+            )
 
             logger.info(
                 "[node_delete_saved] room_id=%s | user_id=%s | node_id=%s | deleted_child_nodes=%s | deleted_edges=%s | graph_snapshot_id=%s",
                 room_id,
                 user_id,
                 node_id,
-                len(child_nodes),
-                len(connected_edges),
+                len(deletion["child_nodes"]),
+                len(deletion["edges"]),
                 graph_snapshot_id,
             )
 
@@ -349,6 +348,11 @@ class GraphInteractionService:
         x, y, z = self._parse_position_payload(payload=payload)
         requested_node_type = self._parse_optional_node_type(payload=payload)
         node_type = requested_node_type or NodeType.PROPERTY
+
+        if node_type == NodeType.REFERENCE:
+            raise ValueError(
+                "[GRAPH409] REFERENCE nodes must be created through POST /api/references/generate"
+            )
 
         edge: Edge | None = None
 
@@ -749,14 +753,26 @@ class GraphInteractionService:
         }
 
         deleted_at = datetime.now(timezone.utc)
+        reference_deletion = None
 
-        self.graph_repository.soft_delete_edge(
-            edge=edge,
-            deleted_at=deleted_at,
-        )
+        if (
+            edge.label == EdgeType.PROPERTY_REFERENCE.value
+            and self._node_type_value(to_node) == NodeType.REFERENCE.value
+        ):
+            reference_deletion = self._soft_delete_node_graph_state(
+                room_id=room_id,
+                node=to_node,
+                deleted_at=deleted_at,
+            )
+        else:
+            self.graph_repository.soft_delete_edge(
+                edge=edge,
+                deleted_at=deleted_at,
+            )
+
         self.db.flush()
 
-        if self._is_part_property_edge(
+        if reference_deletion is None and self._is_part_property_edge(
             from_node=from_node,
             to_node=to_node,
         ):
@@ -781,11 +797,27 @@ class GraphInteractionService:
             payload={
                 "interaction_type": "EDGE_DELETE",
                 **before_payload,
+                "deleted_reference_node_ids": (
+                    [str(target_node.node_id) for target_node in reference_deletion["nodes"]]
+                    if reference_deletion is not None
+                    else []
+                ),
+                "deleted_reference_ids": (
+                    reference_deletion["reference_ids"]
+                    if reference_deletion is not None
+                    else []
+                ),
                 "graph_snapshot_id": str(graph_snapshot.graph_snapshot_id),
             },
         )
 
         self.db.commit()
+
+        if reference_deletion is not None:
+            self._delete_reference_images_best_effort(
+                room_id=room_id,
+                image_urls=reference_deletion["image_urls"],
+            )
 
         logger.info(
             "[edge_delete_saved] room_id=%s | user_id=%s | edge_id=%s | graph_snapshot_id=%s",
@@ -850,12 +882,12 @@ class GraphInteractionService:
             from_type == NodeType.PART.value
             and to_type == NodeType.PROPERTY.value
         )
-        is_part_reference_edge = (
-            from_type == NodeType.PART.value
-            and to_type == NodeType.REFERENCE.value
-        )
+        if to_type == NodeType.REFERENCE.value:
+            raise ValueError(
+                "[GRAPH409] REFERENCE edges must be created through POST /api/references/generate"
+            )
 
-        if is_part_property_edge or is_part_reference_edge:
+        if is_part_property_edge:
             return
 
         if from_node.sub_graph_id != to_node.sub_graph_id:
@@ -873,6 +905,79 @@ class GraphInteractionService:
             self._node_type_value(from_node) == NodeType.PART.value
             and self._node_type_value(to_node) == NodeType.PROPERTY.value
         )
+
+    def _soft_delete_node_graph_state(
+        self,
+        *,
+        room_id: UUID,
+        node: Node,
+        deleted_at,
+    ) -> dict:
+        child_nodes = self.graph_repository.find_active_child_nodes_recursively(
+            db=self.db,
+            room_id=room_id,
+            parent_node_id=node.node_id,
+        )
+        nodes_to_delete = [node, *child_nodes]
+        node_ids = [target_node.node_id for target_node in nodes_to_delete]
+        connected_edges = self.graph_repository.find_active_edges_connected_to_nodes(
+            db=self.db,
+            room_id=room_id,
+            node_ids=node_ids,
+        )
+        references = self.graph_repository.find_reference_records_by_node_ids(
+            db=self.db,
+            node_ids=node_ids,
+        )
+        image_urls = list(
+            dict.fromkeys(
+                reference.image_url
+                for reference in references
+                if reference.image_url
+            )
+        )
+
+        self.graph_repository.delete_references(
+            db=self.db,
+            references=references,
+        )
+        self.graph_repository.soft_delete_nodes(
+            nodes=nodes_to_delete,
+            deleted_at=deleted_at,
+        )
+        self.graph_repository.soft_delete_edges(
+            edges=connected_edges,
+            deleted_at=deleted_at,
+        )
+
+        return {
+            "child_nodes": child_nodes,
+            "nodes": nodes_to_delete,
+            "edges": connected_edges,
+            "reference_ids": [str(reference.reference_id) for reference in references],
+            "image_urls": image_urls,
+        }
+
+    def _delete_reference_images_best_effort(
+        self,
+        *,
+        room_id: UUID,
+        image_urls: list[str],
+    ) -> None:
+        storage = self.minio_asset_storage or MinioAssetStorage()
+
+        for image_url in image_urls:
+            try:
+                storage.delete_reference_image(
+                    image_url=image_url,
+                )
+            except Exception as cleanup_error:
+                logger.exception(
+                    "[reference_delete_cleanup_failed] room_id=%s | image_url=%s | error=%s",
+                    room_id,
+                    image_url,
+                    str(cleanup_error),
+                )
 
     def _reassign_part_sub_graph_after_edge_delete(
         self,
