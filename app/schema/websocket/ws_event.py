@@ -37,8 +37,9 @@ class Image2DColorChangedWSEvent(BaseModel):
     room_id: UUID
     payload: Image2DColorChangedPayload
 
-class Model3DGeneratedWSEvent(WSEvent):
+class Model3DGeneratedWSEvent(BaseModel):
     event_type: Literal["3D_GENERATED"] = "3D_GENERATED"
+    room_id: UUID
     payload: Model3DAssetPayload
 
 

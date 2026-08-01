@@ -102,6 +102,49 @@ class MinioAssetStorage:
             public_url=public_url,
         )
 
+    def upload_generated_model(
+        self,
+        *,
+        room_id: UUID,
+        source_asset_id: UUID,
+        model_bytes: bytes,
+    ) -> StoredObjectInfo:
+        object_name = f"3d/{room_id}/{source_asset_id}/{uuid4()}.glb"
+        mime_type = "model/gltf-binary"
+        self.minio_manager.upload_bytes(
+            bucket_name=settings.MINIO_BUCKET_2D_ASSETS,
+            object_name=object_name,
+            data=model_bytes,
+            content_type=mime_type,
+        )
+        public_url = self.minio_manager.build_public_url(
+            bucket_name=settings.MINIO_BUCKET_2D_ASSETS,
+            object_name=object_name,
+        )
+
+        logger.info(
+            "[upload_generated_model_completed] room_id=%s | source_asset_id=%s | object_name=%s",
+            room_id,
+            source_asset_id,
+            object_name,
+        )
+        return StoredObjectInfo(
+            bucket_name=settings.MINIO_BUCKET_2D_ASSETS,
+            object_name=object_name,
+            public_url=public_url,
+        )
+
+    def delete_uploaded_model(
+        self,
+        *,
+        bucket_name: str,
+        object_name: str,
+    ) -> None:
+        self.minio_manager.remove_object(
+            bucket_name=bucket_name,
+            object_name=object_name,
+        )
+
     def delete_uploaded_image(
         self,
         *,

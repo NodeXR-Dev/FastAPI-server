@@ -83,6 +83,20 @@ class Generated2DAssetResult:
     height: int | None
     img_url: str
 
+
+@dataclass
+class Generated3DModelBinary:
+    task_id: str
+    model_bytes: bytes
+    mime_type: str = "model/gltf-binary"
+
+
+@dataclass
+class Generated3DAssetResult:
+    asset_id: UUID
+    mime_type: str
+    model_url: str
+
 @dataclass
 class FeaturePromptContext:
     room_id: UUID
