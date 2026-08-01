@@ -10,6 +10,18 @@ logger = get_logger(__name__)
 
 
 class AssetRepository:
+    def find_asset_by_id(
+        self,
+        db: Session,
+        *,
+        asset_id: UUID,
+    ) -> Asset | None:
+        return (
+            db.query(Asset)
+            .filter(Asset.asset_id == asset_id)
+            .first()
+        )
+
     def create_2d_asset(
         self,
         db: Session,
@@ -42,4 +54,15 @@ class AssetRepository:
             asset.asset_id,
         )
 
+        return asset
+
+    def update_graph_snapshot(
+        self,
+        db: Session,
+        *,
+        asset: Asset,
+        graph_snapshot_id: UUID,
+    ) -> Asset:
+        asset.graph_snapshot_id = graph_snapshot_id
+        db.flush()
         return asset

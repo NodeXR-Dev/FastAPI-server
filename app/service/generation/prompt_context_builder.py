@@ -3,7 +3,6 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.core.logger import get_logger
 from app.repository.feature_repository import FeatureRepository
 from app.repository.graph_repository import GraphRepository
 from app.repository.room_repository import RoomRepository
@@ -12,9 +11,6 @@ from app.schema.generation.generation_result import (
     ConnectionPromptInfo,
     PromptContext,
 )
-
-logger = get_logger(__name__)
-
 
 class PromptContextBuilder:
     def __init__(
@@ -28,99 +24,138 @@ class PromptContextBuilder:
         self.room_repository = room_repository or RoomRepository()
         self.graph_repository = graph_repository or GraphRepository()
 
-    def build(
+    def capture_snapshot_context(
         self,
         *,
         db: Session,
         room_id: UUID,
         connections: list[Connection2D],
+    ) -> dict:
+        return {
+            "topic": self.room_repository.find_room_topic(
+                db=db,
+                room_id=room_id,
+            ),
+            "features": self.feature_repository.find_feature_texts(
+                db=db,
+                room_id=room_id,
+            ),
+            "connections": [
+                connection.model_dump(mode="json")
+                for connection in connections
+            ],
+        }
+
+    def build_from_snapshot(
+        self,
+        *,
+        db: Session,
+        room_id: UUID,
+        graph_snapshot_id: UUID,
+        expected_connections: list[Connection2D] | None = None,
     ) -> PromptContext:
-        logger.info(
-            "[prompt_context_build_started] room_id=%s | connection_count=%s",
-            room_id,
-            len(connections),
-        )
-
-        topic = self.room_repository.find_room_topic(
+        graph_snapshot = self.graph_repository.find_graph_snapshot_by_id(
             db=db,
             room_id=room_id,
+            graph_snapshot_id=graph_snapshot_id,
         )
+        if graph_snapshot is None:
+            raise ValueError("Generation Input Snapshot을 찾을 수 없습니다.")
 
-        features = self.feature_repository.find_feature_texts(
-            db=db,
-            room_id=room_id,
+        snapshot_data = self.graph_repository.load_snapshot_data(
+            graph_snapshot=graph_snapshot,
         )
+        generation_context = snapshot_data.get("_generation_context")
+        if not isinstance(generation_context, dict):
+            raise ValueError("Generation Input Snapshot에 Prompt Context가 없습니다.")
 
-        grouped_connections: dict[UUID | None, list[ConnectionPromptInfo]] = defaultdict(list)
+        snapshot_connections = [
+            Connection2D.model_validate(connection)
+            for connection in generation_context.get("connections", [])
+        ]
+        if (
+            expected_connections is not None
+            and snapshot_connections != expected_connections
+        ):
+            raise ValueError("요청 Connection과 Input Snapshot이 일치하지 않습니다.")
 
-        for connection in connections:
-            logger.info(
-                "[prompt_context_connection_started] room_id=%s | part_node_id=%s | node_id=%s",
-                room_id,
-                connection.part_node_id,
-                connection.node_id,
+        node_by_id: dict[UUID, tuple[dict, UUID | None]] = {}
+        for sub_graph in snapshot_data.get("sub_graphs", []):
+            sub_graph_id_value = sub_graph.get("sub_graph_id")
+            sub_graph_id = (
+                UUID(str(sub_graph_id_value))
+                if sub_graph_id_value is not None
+                else None
             )
+            for node in sub_graph.get("nodes", []):
+                node_id = UUID(str(node["node_id"]))
+                node_by_id[node_id] = (node, sub_graph_id)
 
-            part_node = self.graph_repository.find_active_node_by_id(
-                db=db,
-                room_id=room_id,
-                node_id=connection.part_node_id,
-            )
-
-            if part_node is None:
+        grouped_connections: dict[
+            UUID | None,
+            list[ConnectionPromptInfo],
+        ] = defaultdict(list)
+        for connection in snapshot_connections:
+            part_entry = node_by_id.get(connection.part_node_id)
+            target_entry = node_by_id.get(connection.node_id)
+            if part_entry is None or target_entry is None:
                 raise ValueError(
-                    f"part_node를 찾을 수 없습니다. part_node_id={connection.part_node_id}"
+                    "Input Snapshot에서 생성 Connection의 Node를 찾을 수 없습니다."
                 )
 
-            ancestor_chain = self.graph_repository.find_active_ancestor_chain_to_root(
-                db=db,
-                room_id=room_id,
-                node_id=connection.node_id,
+            target_node, sub_graph_id = target_entry
+            node_chain_texts = self._build_snapshot_node_chain_texts(
+                target_node=target_node,
+                node_by_id=node_by_id,
             )
-
-            if not ancestor_chain:
-                raise ValueError(
-                    f"node_id 기준 부모 체인을 찾을 수 없습니다. node_id={connection.node_id}"
-                )
-
-            target_node = ancestor_chain[-1]
-            sub_graph_id = target_node.sub_graph_id
-
-            node_chain_texts = [
-                node.node_text
-                for node in ancestor_chain
-                if node.node_text
-            ]
-
             grouped_connections[sub_graph_id].append(
                 ConnectionPromptInfo(
                     part_node_id=connection.part_node_id,
-                    part_node_text=part_node.node_text or "",
+                    part_node_text=part_entry[0].get("node_text") or "",
                     node_id=connection.node_id,
                     node_chain_texts=node_chain_texts,
                     sub_graph_id=sub_graph_id,
                 )
             )
 
-            logger.info(
-                "[prompt_context_connection_completed] room_id=%s | sub_graph_id=%s | chain_length=%s",
-                room_id,
-                sub_graph_id,
-                len(node_chain_texts),
-            )
-
-        context = PromptContext(
+        return PromptContext(
             room_id=room_id,
-            topic=topic,
-            features=features,
+            topic=str(generation_context.get("topic") or ""),
+            features=[
+                str(feature)
+                for feature in generation_context.get("features", [])
+                if feature
+            ],
             grouped_connections=dict(grouped_connections),
         )
 
-        logger.info(
-            "[prompt_context_build_completed] room_id=%s | feature_count=%s | sub_graph_count=%s",
-            room_id,
-            len(features),
-            len(grouped_connections),
-        )
+    @staticmethod
+    def _build_snapshot_node_chain_texts(
+        *,
+        target_node: dict,
+        node_by_id: dict[UUID, tuple[dict, UUID | None]],
+    ) -> list[str]:
+        chain: list[str] = []
+        current = target_node
+        visited_node_ids: set[UUID] = set()
 
-        return context
+        while current is not None:
+            current_node_id = UUID(str(current["node_id"]))
+            if current_node_id in visited_node_ids:
+                raise ValueError("Input Snapshot의 Node 부모 관계에 cycle이 있습니다.")
+            visited_node_ids.add(current_node_id)
+
+            node_text = current.get("node_text")
+            if node_text:
+                chain.append(str(node_text))
+
+            parent_node_id = current.get("parent_node_id")
+            if parent_node_id is None:
+                break
+            parent_entry = node_by_id.get(UUID(str(parent_node_id)))
+            if parent_entry is None:
+                break
+            current = parent_entry[0]
+
+        chain.reverse()
+        return chain

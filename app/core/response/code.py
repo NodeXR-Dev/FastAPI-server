@@ -88,6 +88,9 @@ class ResponseCode(str, Enum):
     # =========================
     IMG202 = "IMG202"        # 이미지 요청 성공
     IMG500 = "IMG500"
+    COLOR_CHANGE201 = "2D201"
+    COLOR_CHANGE400 = "2D400"
+    COLOR_CHANGE404 = "2D404"
     
     HISTORY200 = "HISTORY200"
     HISTORY400 = "HISTORY400"
@@ -144,6 +147,9 @@ RESPONSE_MESSAGES = {
     
     ResponseCode.IMG202: "2D 이미지 생성 요청이 접수되었습니다.",
     ResponseCode.IMG500: "2D 이미지 생성에 실패했습니다.",
+    ResponseCode.COLOR_CHANGE201: "2D 색상 변경 요청 성공",
+    ResponseCode.COLOR_CHANGE400: "잘못된 2D 색상 변경 요청입니다.",
+    ResponseCode.COLOR_CHANGE404: "색상 변경에 필요한 리소스를 찾을 수 없습니다.",
     
     ResponseCode.HISTORY200 : "노드 그래프 히스토리 조회 성공",
     ResponseCode.HISTORY400 : "노드 그래프 히스토리 조회 요청 실패",

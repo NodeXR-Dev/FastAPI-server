@@ -61,6 +61,13 @@ class GeneratedImageBinary:
     height: int | None = None
 
 
+@dataclass(frozen=True)
+class ImageBinaryInfo:
+    mime_type: str
+    width: int
+    height: int
+
+
 @dataclass
 class StoredObjectInfo:
     bucket_name: str

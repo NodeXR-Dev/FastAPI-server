@@ -130,6 +130,33 @@ class MinioManager:
             object_name,
         )
 
+    def download_bytes(
+        self,
+        *,
+        bucket_name: str,
+        object_name: str,
+    ) -> bytes:
+        logger.info(
+            "[minio_download_started] bucket_name=%s | object_name=%s",
+            bucket_name,
+            object_name,
+        )
+        response = self.client.get_object(bucket_name, object_name)
+
+        try:
+            data = response.read()
+        finally:
+            response.close()
+            response.release_conn()
+
+        logger.info(
+            "[minio_download_completed] bucket_name=%s | object_name=%s | size=%s",
+            bucket_name,
+            object_name,
+            len(data),
+        )
+        return data
+
     def build_public_url(
         self,
         *,
