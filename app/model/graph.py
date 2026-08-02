@@ -220,6 +220,10 @@ class GraphEvent(Base):
         server_default=func.now(),
     )
 
+    processed_at: Mapped[object | None] = mapped_column(
+        DateTime(timezone=True),
+    )
+
     __table_args__ = (
         Index("ix_graph_events_room_id", "room_id"),
         Index("ix_graph_events_user_id", "user_id"),
@@ -228,6 +232,7 @@ class GraphEvent(Base):
         Index("ix_graph_events_related_fact_id", "related_fact_id"),
         Index("ix_graph_events_event_type", "event_type"),
         Index("ix_graph_events_created_at", "created_at"),
+        Index("ix_graph_events_processed_room", "processed_at", "room_id"),
     )
 
 class GraphSnapshot(Base):

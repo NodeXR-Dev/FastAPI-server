@@ -86,3 +86,39 @@ The trace tree includes `RealtimeUtteranceHotPath`, `embedding`,
 `topic_routing`, `RealtimeAgentGraph`, `classify_triggers`, the selected nested
 subgraphs and their retrieval/LLM nodes, and `persist_and_notify`. Trace metadata
 contains IDs and graph names, not a duplicate of the full utterance text.
+
+## 9. Reflection Batch Cold Path
+
+The application lifespan starts a five-minute Reflection scheduler. It selects
+`NOREFLECT` utterances and graph events whose `processed_at` is null; selection is
+not limited to the latest five minutes. A PostgreSQL advisory lock prevents two
+workers from reflecting the same room concurrently.
+
+`ReflectionBatchGraph` retrieves topic-scoped facts and memories, analyzes the
+batch with structured output, validates provenance and relationship rules,
+performs vector-first fact deduplication, proposes semantic memories and changed
+topic summaries, then delegates all writes to one service transaction. Utterances
+become `REFLECT` and graph events receive `processed_at` only after every fact,
+link, memory, and topic write succeeds.
+
+```dotenv
+REFLECTION_BATCH_ENABLED=true
+REFLECTION_BATCH_INTERVAL_SECONDS=300
+REFLECTION_BATCH_MAX_UTTERANCES=200
+REFLECTION_BATCH_MAX_GRAPH_EVENTS=200
+REFLECTION_FACT_TOP_K=100
+REFLECTION_MEMORY_TOP_K=50
+BATCH_FACT_MIN_CONFIDENCE=0.65
+BATCH_LINK_MIN_CONFIDENCE=0.65
+FACT_DEDUP_SIMILARITY_THRESHOLD=0.82
+```
+
+The batch reuses `AGENT_LLM_MODEL`, `AGENT_LLM_TIMEOUT_SECONDS`, and the existing
+LangSmith project. Traces are distinguished with `reflection-batch` and
+`cold-path` tags.
+
+Apply the Reflection tracking migration before enabling the scheduler:
+
+```bash
+PYTHONPATH=. alembic -c app/alembic.ini upgrade head
+```

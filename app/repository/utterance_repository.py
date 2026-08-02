@@ -1,6 +1,7 @@
 import uuid
 import time
 
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
@@ -15,6 +16,68 @@ logger = get_logger(__name__)
 
 
 class UtteranceRepository:
+    @staticmethod
+    def unprocessed_condition():
+        return or_(
+            Utterance.state == UtteranceState.NOREFLECT,
+            Utterance.state.is_(None),
+        )
+
+    def find_unprocessed_by_room(
+        self,
+        db: Session,
+        *,
+        room_id: uuid.UUID,
+        limit: int,
+        for_update: bool = False,
+    ) -> list[Utterance]:
+        stmt = (
+            select(Utterance)
+            .where(
+                Utterance.room_id == room_id,
+                self.unprocessed_condition(),
+            )
+            .order_by(Utterance.created_at.asc(), Utterance.utterance_id.asc())
+            .limit(limit)
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        return list(db.scalars(stmt).all())
+
+    def find_unprocessed_room_ids(self, db: Session) -> list[uuid.UUID]:
+        stmt = (
+            select(Utterance.room_id)
+            .where(self.unprocessed_condition())
+            .distinct()
+            .order_by(Utterance.room_id.asc())
+        )
+        return list(db.scalars(stmt).all())
+
+    def lock_unprocessed_by_ids(
+        self,
+        db: Session,
+        *,
+        room_id: uuid.UUID,
+        utterance_ids: list[uuid.UUID],
+    ) -> list[Utterance]:
+        if not utterance_ids:
+            return []
+        stmt = (
+            select(Utterance)
+            .where(
+                Utterance.room_id == room_id,
+                Utterance.utterance_id.in_(utterance_ids),
+                self.unprocessed_condition(),
+            )
+            .order_by(Utterance.created_at.asc(), Utterance.utterance_id.asc())
+            .with_for_update()
+        )
+        return list(db.scalars(stmt).all())
+
+    def mark_reflected(self, utterances: list[Utterance]) -> None:
+        for utterance in utterances:
+            utterance.state = UtteranceState.REFLECT
+
     def create(
         self,
         db: Session,

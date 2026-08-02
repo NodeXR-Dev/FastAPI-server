@@ -14,6 +14,63 @@ from app.schema.graph.response import GraphResponse
 
 
 class GraphRepository:
+    def find_unprocessed_events_by_room(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        limit: int,
+    ) -> list[GraphEvent]:
+        stmt = (
+            select(GraphEvent)
+            .where(
+                GraphEvent.room_id == room_id,
+                GraphEvent.processed_at.is_(None),
+            )
+            .order_by(GraphEvent.created_at.asc(), GraphEvent.graph_event_id.asc())
+            .limit(limit)
+        )
+        return list(db.scalars(stmt).all())
+
+    def find_unprocessed_event_room_ids(self, db: Session) -> list[UUID]:
+        stmt = (
+            select(GraphEvent.room_id)
+            .where(GraphEvent.processed_at.is_(None))
+            .distinct()
+            .order_by(GraphEvent.room_id.asc())
+        )
+        return list(db.scalars(stmt).all())
+
+    def lock_unprocessed_events_by_ids(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        graph_event_ids: list[UUID],
+    ) -> list[GraphEvent]:
+        if not graph_event_ids:
+            return []
+        stmt = (
+            select(GraphEvent)
+            .where(
+                GraphEvent.room_id == room_id,
+                GraphEvent.graph_event_id.in_(graph_event_ids),
+                GraphEvent.processed_at.is_(None),
+            )
+            .order_by(GraphEvent.created_at.asc(), GraphEvent.graph_event_id.asc())
+            .with_for_update()
+        )
+        return list(db.scalars(stmt).all())
+
+    def mark_events_processed(
+        self,
+        events: list[GraphEvent],
+        *,
+        processed_at: datetime,
+    ) -> None:
+        for event in events:
+            event.processed_at = processed_at
+
     def save_graph_from_response(
         self,
         db: Session,

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.model.enum import TopicStatus
@@ -88,5 +88,56 @@ class TopicRepository:
         centroid_embedding: list[float],
     ) -> Topic:
         topic.centroid_embedding = centroid_embedding
+        db.flush()
+        return topic
+
+    def find_by_ids(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        topic_ids: list[UUID],
+    ) -> list[Topic]:
+        if not topic_ids:
+            return []
+        stmt = (
+            select(Topic)
+            .where(
+                Topic.room_id == room_id,
+                Topic.topic_id.in_(topic_ids),
+            )
+            .order_by(Topic.created_at.asc(), Topic.topic_id.asc())
+        )
+        return list(db.scalars(stmt).all())
+
+    def find_utterance_embeddings(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        topic_id: UUID,
+    ) -> list[list[float]]:
+        stmt = (
+            select(Utterance.embedding)
+            .where(
+                Utterance.room_id == room_id,
+                Utterance.topic_id == topic_id,
+                Utterance.embedding.isnot(None),
+            )
+            .order_by(Utterance.created_at.asc(), Utterance.utterance_id.asc())
+        )
+        return [list(value) for value in db.scalars(stmt).all()]
+
+    def update_summary_and_centroid(
+        self,
+        db: Session,
+        *,
+        topic: Topic,
+        summary: str,
+        centroid_embedding: list[float] | None,
+    ) -> Topic:
+        topic.summary = summary
+        if centroid_embedding is not None:
+            topic.centroid_embedding = centroid_embedding
         db.flush()
         return topic

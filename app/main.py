@@ -6,6 +6,7 @@ from fastapi.exceptions import RequestValidationError
 
 from app.core.startup import bootstrap_infrastructure
 from app.service.utterance.embedding_service import get_embedding_model
+from app.service.agent.reflection_scheduler import get_reflection_scheduler
 
 from app.api.utterance import router as utterance_router
 from app.api.room import router as room_router
@@ -35,11 +36,13 @@ async def lifespan(app: FastAPI):
     # 서버 시작 시 실행
     bootstrap_infrastructure()
     get_embedding_model()
+    reflection_scheduler = get_reflection_scheduler()
+    reflection_scheduler.start()
 
-    yield
-
-    # 서버 종료 시 실행
-    # close_something()
+    try:
+        yield
+    finally:
+        await reflection_scheduler.stop()
 
 
 app = FastAPI(
