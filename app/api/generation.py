@@ -54,8 +54,10 @@ def request_3d_generate(
     db: Session = Depends(get_db),
 ):
     logger.info(
-        "[3d_generation_requested] room_id=%s | source_asset_id=%s",
+        "[3d_generation_requested] room_id=%s | user_id=%s | job_id=%s | source_asset_id=%s",
         request.room_id,
+        request.user_id,
+        request.job_id,
         request.asset_id,
     )
     model_3d_generation_service.validate_request(
@@ -65,16 +67,20 @@ def request_3d_generate(
     background_tasks.add_task(
         model_3d_generation_service.run,
         room_id=request.room_id,
+        user_id=request.user_id,
+        job_id=request.job_id,
         source_asset_id=request.asset_id,
     )
     logger.info(
-        "[3d_generation_task_registered] room_id=%s | source_asset_id=%s",
+        "[3d_generation_task_registered] room_id=%s | user_id=%s | job_id=%s | source_asset_id=%s",
         request.room_id,
+        request.user_id,
+        request.job_id,
         request.asset_id,
     )
     return success_response(
         code=ResponseCode.MODEL_3D200,
-        result={},
+        result={"job_id": str(request.job_id)},
     )
 
 
@@ -84,6 +90,8 @@ def request_3d_generate(
 )
 def request_2d_color_change(
     room_id: Annotated[UUID, Form()],
+    user_id: Annotated[UUID, Form()],
+    job_id: Annotated[UUID, Form()],
     file: Annotated[UploadFile, File()],
     asset_id: Annotated[UUID, Form()],
     metadata: Annotated[str, Form()],
@@ -102,6 +110,8 @@ def request_2d_color_change(
 
     request = ColorChangeRequest(
         room_id=room_id,
+        user_id=user_id,
+        job_id=job_id,
         asset_id=asset_id,
         metadata=parsed_metadata,
     )
@@ -115,6 +125,8 @@ def request_2d_color_change(
     background_tasks.add_task(
         image_2d_generation_task_service.generate_color_change,
         room_id=room_id,
+        user_id=user_id,
+        job_id=job_id,
         source_asset_id=asset_id,
         graph_snapshot_id=graph_snapshot_id,
         guide_image_bytes=guide_image_bytes,
@@ -123,7 +135,7 @@ def request_2d_color_change(
 
     return success_response(
         code=ResponseCode.COLOR_CHANGE201,
-        result={},
+        result={"job_id": str(job_id)},
     )
 
 
@@ -134,9 +146,10 @@ async def request_2d_generate(
     db: Session = Depends(get_db),
 ):
     logger.info(
-        "[2d_generate_requested] room_id=%s | user_id=%s | connection_count=%s",
+        "[2d_generate_requested] room_id=%s | user_id=%s | job_id=%s | connection_count=%s",
         request.room_id,
         request.user_id,
+        request.job_id,
         len(request.connections),
     )
 
@@ -167,20 +180,23 @@ async def request_2d_generate(
             image_2d_generation_task_service.generate_from_graph,
             room_id=request.room_id,
             user_id=request.user_id,
+            job_id=request.job_id,
             graph_snapshot_id=graph_snapshot.graph_snapshot_id,
             connections=request.connections,
         )
 
         logger.info(
-            "[2d_generate_task_registered] room_id=%s | user_id=%s | graph_snapshot_id=%s",
+            "[2d_generate_task_registered] room_id=%s | user_id=%s | job_id=%s | graph_snapshot_id=%s",
             request.room_id,
             request.user_id,
+            request.job_id,
             graph_snapshot.graph_snapshot_id,
         )
 
         return success_response(
             code=ResponseCode.IMG202,
             message="2D 이미지 생성 요청이 접수되었습니다.",
+            result={"job_id": str(request.job_id)},
         )
 
     except Exception as e:
@@ -201,24 +217,28 @@ async def request_2d_generate_by_feature(
     background_tasks: BackgroundTasks,
 ):
     logger.info(
-        "[2d_feature_generate_requested] room_id=%s | user_id=%s",
+        "[2d_feature_generate_requested] room_id=%s | user_id=%s | job_id=%s",
         request.room_id,
         request.user_id,
+        request.job_id,
     )
 
     background_tasks.add_task(
         image_2d_generation_task_service.generate_from_features,
         room_id=request.room_id,
         user_id=request.user_id,
+        job_id=request.job_id,
     )
 
     logger.info(
-        "[2d_feature_generate_task_registered] room_id=%s | user_id=%s",
+        "[2d_feature_generate_task_registered] room_id=%s | user_id=%s | job_id=%s",
         request.room_id,
         request.user_id,
+        request.job_id,
     )
 
     return success_response(
         code=ResponseCode.IMG202,
         message="Feature 기반 2D 이미지 생성 요청이 접수되었습니다.",
+        result={"job_id": str(request.job_id)},
     )

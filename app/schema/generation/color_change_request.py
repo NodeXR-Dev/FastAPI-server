@@ -16,5 +16,7 @@ class ColorChangeMetadataRequest(BaseModel):
 
 class ColorChangeRequest(BaseModel):
     room_id: UUID
+    user_id: UUID
+    job_id: UUID
     asset_id: UUID
     metadata: ColorChangeMetadataRequest

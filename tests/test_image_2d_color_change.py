@@ -109,6 +109,8 @@ def test_color_change_router_returns_exact_202_contract_and_copies_upload_bytes(
 
     app.dependency_overrides[get_db] = override_db
     room_id = uuid4()
+    user_id = uuid4()
+    job_id = uuid4()
     source_asset_id = uuid4()
     input_snapshot_id = uuid4()
     guide_image = make_image()
@@ -131,6 +133,8 @@ def test_color_change_router_returns_exact_202_contract_and_copies_upload_bytes(
         "/api/2d/color_change",
         data={
             "room_id": str(room_id),
+            "user_id": str(user_id),
+            "job_id": str(job_id),
             "asset_id": str(source_asset_id),
             "metadata": json.dumps(
                 {"mime_type": "image/png", "width": 4, "height": 3}
@@ -144,7 +148,7 @@ def test_color_change_router_returns_exact_202_contract_and_copies_upload_bytes(
         "isSuccess": True,
         "code": "2D201",
         "message": "2D 색상 변경 요청 성공",
-        "result": {},
+        "result": {"job_id": str(job_id)},
     }
     validation_call = validation_service.validate_request.call_args.kwargs
     assert validation_call["db"] is request_db
@@ -152,6 +156,8 @@ def test_color_change_router_returns_exact_202_contract_and_copies_upload_bytes(
     task_call = task_service.generate_color_change.call_args.kwargs
     assert task_call == {
         "room_id": room_id,
+        "user_id": user_id,
+        "job_id": job_id,
         "source_asset_id": source_asset_id,
         "graph_snapshot_id": input_snapshot_id,
         "guide_image_bytes": guide_image,
@@ -617,8 +623,10 @@ def test_gemini_color_change_rejects_missing_or_undecodable_output(response):
         )
 
 
-def test_color_change_task_broadcasts_exact_payload_once_after_persistence():
+def test_color_change_task_sends_exact_payload_only_to_requester_after_persistence():
     room_id = uuid4()
+    user_id = uuid4()
+    job_id = uuid4()
     result = Generated2DAssetResult(
         asset_id=uuid4(),
         mime_type="image/webp",
@@ -629,7 +637,7 @@ def test_color_change_task_broadcasts_exact_payload_once_after_persistence():
     color_service = Mock()
     color_service.generate = AsyncMock(return_value=result)
     ws_manager = Mock()
-    ws_manager.broadcast_to_room = AsyncMock(return_value=2)
+    ws_manager.send_to_user = AsyncMock(return_value=True)
     task_service = Image2DGenerationTaskService(
         ws_manager=ws_manager,
         color_change_service=color_service,
@@ -638,6 +646,8 @@ def test_color_change_task_broadcasts_exact_payload_once_after_persistence():
     asyncio.run(
         task_service.generate_color_change(
             room_id=room_id,
+            user_id=user_id,
+            job_id=job_id,
             source_asset_id=uuid4(),
             graph_snapshot_id=uuid4(),
             guide_image_bytes=make_image(),
@@ -649,11 +659,13 @@ def test_color_change_task_broadcasts_exact_payload_once_after_persistence():
         )
     )
 
-    ws_manager.broadcast_to_room.assert_awaited_once()
-    message = ws_manager.broadcast_to_room.call_args.kwargs["message"]
+    ws_manager.send_to_user.assert_awaited_once()
+    assert ws_manager.send_to_user.call_args.kwargs["user_id"] == user_id
+    message = ws_manager.send_to_user.call_args.kwargs["message"]
     assert message == {
         "event_type": "2D_COLOR_CHANGED",
         "room_id": str(room_id),
+        "job_id": str(job_id),
         "payload": {
             "asset_id": str(result.asset_id),
             "mime_type": "image/webp",
@@ -679,7 +691,7 @@ def test_websocket_failure_after_color_change_does_not_touch_database_session():
         )
     )
     ws_manager = Mock()
-    ws_manager.broadcast_to_room = AsyncMock(side_effect=RuntimeError("ws failed"))
+    ws_manager.send_to_user = AsyncMock(side_effect=RuntimeError("ws failed"))
     session_factory = Mock()
     task_service = Image2DGenerationTaskService(
         session_factory=session_factory,
@@ -690,6 +702,8 @@ def test_websocket_failure_after_color_change_does_not_touch_database_session():
     asyncio.run(
         task_service.generate_color_change(
             room_id=uuid4(),
+            user_id=uuid4(),
+            job_id=uuid4(),
             source_asset_id=uuid4(),
             graph_snapshot_id=uuid4(),
             guide_image_bytes=make_image(),
@@ -703,6 +717,43 @@ def test_websocket_failure_after_color_change_does_not_touch_database_session():
 
     color_service.generate.assert_awaited_once()
     session_factory.assert_not_called()
+
+
+def test_color_change_failure_sends_correlated_error_only_to_requester():
+    room_id = uuid4()
+    user_id = uuid4()
+    job_id = uuid4()
+    color_service = Mock()
+    color_service.generate = AsyncMock(side_effect=RuntimeError("generation failed"))
+    ws_manager = Mock()
+    ws_manager.send_to_user = AsyncMock(return_value=True)
+    task_service = Image2DGenerationTaskService(
+        ws_manager=ws_manager,
+        color_change_service=color_service,
+    )
+
+    asyncio.run(
+        task_service.generate_color_change(
+            room_id=room_id,
+            user_id=user_id,
+            job_id=job_id,
+            source_asset_id=uuid4(),
+            graph_snapshot_id=uuid4(),
+            guide_image_bytes=make_image(),
+            metadata=ColorChangeMetadataRequest(
+                mime_type="image/png",
+                width=4,
+                height=3,
+            ),
+        )
+    )
+
+    ws_manager.send_to_user.assert_awaited_once()
+    assert ws_manager.send_to_user.call_args.kwargs["user_id"] == user_id
+    message = ws_manager.send_to_user.call_args.kwargs["message"]
+    assert message["event_type"] == "ERROR"
+    assert message["job_id"] == str(job_id)
+    assert message["payload"]["failed_event_type"] == "2D_COLOR_CHANGED"
 
 
 def test_persistence_cleanup_failure_does_not_replace_database_error():

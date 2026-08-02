@@ -7,6 +7,8 @@ from app.core.validators import NotBlankStr
 
 class GenerateFeaturesRequest(BaseModel):
     room_id: UUID
+    user_id: UUID
+    job_id: UUID
     feature_text: NotBlankStr
 
     @field_validator("feature_text")

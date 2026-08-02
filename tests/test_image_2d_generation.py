@@ -9,7 +9,11 @@ from fastapi import BackgroundTasks
 
 from app.api import generation
 from app.repository.graph_repository import GraphRepository
-from app.schema.generation.request import Connection2D, Generate2DGraphRequest
+from app.schema.generation.request import (
+    Connection2D,
+    Generate2DFeatureRequest,
+    Generate2DGraphRequest,
+)
 from app.schema.generation.generation_result import (
     Generated2DAssetResult,
     GeneratedImageBinary,
@@ -110,10 +114,12 @@ def test_graph_generation_request_freezes_prompt_context_in_input_snapshot(
 ):
     room_id = uuid4()
     user_id = uuid4()
+    job_id = uuid4()
     connection = Connection2D(part_node_id=uuid4(), node_id=uuid4())
     request = Generate2DGraphRequest(
         room_id=room_id,
         user_id=user_id,
+        job_id=job_id,
         connections=[connection],
     )
     input_snapshot_id = uuid4()
@@ -166,7 +172,46 @@ def test_graph_generation_request_freezes_prompt_context_in_input_snapshot(
     assert len(background_tasks.tasks) == 1
     task = background_tasks.tasks[0]
     assert task.func is task_service.generate_from_graph
+    assert task.kwargs["job_id"] == job_id
     assert task.kwargs["graph_snapshot_id"] == input_snapshot_id
+    assert result["result"] == {"job_id": str(job_id)}
+
+
+def test_feature_2d_request_returns_job_id_and_passes_it_to_background_task(
+    monkeypatch,
+):
+    room_id = uuid4()
+    user_id = uuid4()
+    job_id = uuid4()
+    request = Generate2DFeatureRequest(
+        room_id=room_id,
+        user_id=user_id,
+        job_id=job_id,
+    )
+    task_service = Mock()
+    task_service.generate_from_features = AsyncMock()
+    monkeypatch.setattr(
+        generation,
+        "image_2d_generation_task_service",
+        task_service,
+    )
+    background_tasks = BackgroundTasks()
+
+    result = asyncio.run(
+        generation.request_2d_generate_by_feature(
+            request=request,
+            background_tasks=background_tasks,
+        )
+    )
+
+    assert result["result"] == {"job_id": str(job_id)}
+    task = background_tasks.tasks[0]
+    assert task.func is task_service.generate_from_features
+    assert task.kwargs == {
+        "room_id": room_id,
+        "user_id": user_id,
+        "job_id": job_id,
+    }
 
 
 def test_result_snapshot_copies_input_graph_and_replaces_only_core_image():
@@ -341,6 +386,7 @@ def test_asset_generation_removes_uploaded_object_when_db_persistence_fails():
 def test_background_task_sends_generated_event_and_closes_session():
     room_id = uuid4()
     user_id = uuid4()
+    job_id = uuid4()
     asset_id = uuid4()
     db = Mock()
     ws_manager = Mock()
@@ -364,6 +410,7 @@ def test_background_task_sends_generated_event_and_closes_session():
         service._run(
             room_id=room_id,
             user_id=user_id,
+            job_id=job_id,
             graph_snapshot_id=None,
             generation_call=generation_call,
         )
@@ -371,6 +418,7 @@ def test_background_task_sends_generated_event_and_closes_session():
 
     message = ws_manager.send_to_user.call_args.kwargs["message"]
     assert message["event_type"] == "2D_GENERATED"
+    assert message["job_id"] == str(job_id)
     assert message["payload"]["asset_id"] == str(asset_id)
     db.close.assert_called_once()
 
@@ -387,10 +435,14 @@ def test_background_task_does_not_send_success_event_when_generation_fails():
     async def generation_call(_db):
         raise RuntimeError("generation failed")
 
+    room_id = uuid4()
+    user_id = uuid4()
+    job_id = uuid4()
     asyncio.run(
         service._run(
-            room_id=uuid4(),
-            user_id=uuid4(),
+            room_id=room_id,
+            user_id=user_id,
+            job_id=job_id,
             graph_snapshot_id=None,
             generation_call=generation_call,
         )
@@ -398,7 +450,10 @@ def test_background_task_does_not_send_success_event_when_generation_fails():
 
     db.rollback.assert_called_once()
     db.close.assert_called_once()
-    ws_manager.send_to_user.assert_not_awaited()
+    message = ws_manager.send_to_user.call_args.kwargs["message"]
+    assert message["event_type"] == "ERROR"
+    assert message["job_id"] == str(job_id)
+    assert message["payload"]["failed_event_type"] == "2D_GENERATED"
 
 
 def test_generate_2d_snapshot_is_included_in_graph_history():

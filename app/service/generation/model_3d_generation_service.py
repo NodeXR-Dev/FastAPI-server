@@ -6,7 +6,12 @@ from sqlalchemy.orm import Session
 
 from app.core.logger import get_logger
 from app.core.response.code import ResponseCode
-from app.core.response.exceptions import BadRequestException, NotFoundException
+from app.core.response.exceptions import (
+    BadRequestException,
+    BaseCustomException,
+    NotFoundException,
+)
+from app.core.response.ws_response import ws_error_event
 from app.db.session import SessionLocal
 from app.model.asset import Asset
 from app.model.enum import AssetType
@@ -53,16 +58,31 @@ class Model3DGenerationService:
         db: Session,
         request: Generate3DRequest,
     ) -> Asset:
-        return self._get_valid_source_asset(
+        return self.validate_source_asset(
             db=db,
             room_id=request.room_id,
             source_asset_id=request.asset_id,
+        )
+
+    def validate_source_asset(
+        self,
+        *,
+        db: Session,
+        room_id: UUID,
+        source_asset_id: UUID,
+    ) -> Asset:
+        return self._get_valid_source_asset(
+            db=db,
+            room_id=room_id,
+            source_asset_id=source_asset_id,
         )
 
     async def run(
         self,
         *,
         room_id: UUID,
+        user_id: UUID,
+        job_id: UUID | None,
         source_asset_id: UUID,
     ) -> None:
         logger.info(
@@ -82,10 +102,17 @@ class Model3DGenerationService:
                 source_asset_id,
                 str(error),
             )
+            await self._send_error_to_user(
+                room_id=room_id,
+                user_id=user_id,
+                job_id=job_id,
+                error=error,
+            )
             return
 
         event = Model3DGeneratedWSEvent(
             room_id=room_id,
+            job_id=job_id,
             payload=Model3DAssetPayload(
                 asset_id=result.asset_id,
                 mime_type=result.mime_type,
@@ -93,8 +120,9 @@ class Model3DGenerationService:
             ),
         )
         try:
-            await self.ws_manager.broadcast_to_room(
+            await self.ws_manager.send_to_user(
                 room_id=room_id,
+                user_id=user_id,
                 message=event.model_dump(mode="json"),
             )
         except Exception as error:
@@ -112,6 +140,46 @@ class Model3DGenerationService:
             source_asset_id,
             result.asset_id,
         )
+
+    async def _send_error_to_user(
+        self,
+        *,
+        room_id: UUID,
+        user_id: UUID,
+        job_id: UUID | None,
+        error: Exception,
+    ) -> None:
+        code = (
+            error.code
+            if isinstance(error, BaseCustomException)
+            else ResponseCode.MODEL_3D500
+        )
+
+        try:
+            await self.ws_manager.send_to_user(
+                room_id=room_id,
+                user_id=user_id,
+                message=ws_error_event(
+                    room_id=room_id,
+                    user_id=user_id,
+                    job_id=job_id,
+                    code=code,
+                    failed_event_type="3D_GENERATED",
+                    message=(
+                        error.message
+                        if isinstance(error, BaseCustomException)
+                        else None
+                    ),
+                ),
+            )
+        except Exception as send_error:
+            logger.exception(
+                "[3d_generation_error_ws_failed] room_id=%s | user_id=%s | job_id=%s | error=%s",
+                room_id,
+                user_id,
+                job_id,
+                str(send_error),
+            )
 
     async def generate(
         self,

@@ -47,13 +47,17 @@ async def generate_features(
     background_tasks.add_task(
         image_2d_generation_task_service.generate_from_features,
         room_id=request.room_id,
-        user_id=None,
+        user_id=request.user_id,
+        job_id=request.job_id,
     )
 
     return success_response(
         code=ResponseCode.FEATURE200,
         message="기능 목록 생성 및 초기 2D 스케치 요청이 접수되었습니다.",
-        result=result.model_dump(mode="json"),
+        result={
+            **result.model_dump(mode="json"),
+            "job_id": str(request.job_id),
+        },
     )
 
 

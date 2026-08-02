@@ -17,6 +17,7 @@ from app.core.response.ws_response import send_ws_success_to_requester
 from app.core.ws_utils import (
     extract_user_id,
     get_raw_event_type,
+    get_raw_job_id,
     payload_to_dict,
     ws_db_session,
 )
@@ -63,10 +64,12 @@ async def room_event_websocket(
             raw_data: Any = None
             event: WSEvent | None = None
             current_user_id: UUID | None = connected_user_id
+            current_job_id: UUID | None = None
             start_time = time.perf_counter()
 
             try:
                 raw_data = await _receive_ws_json(websocket)
+                current_job_id = get_raw_job_id(raw_data)
                 event = WSEvent.model_validate(raw_data)
 
                 event_user_id = extract_user_id(event)
@@ -112,9 +115,8 @@ async def room_event_websocket(
                         user_id=current_user_id,
                     )
 
-                await broadcast_server_events(
-                    room_id=event.room_id,
-                    user_id=current_user_id,
+                await send_server_events_to_requester(
+                    websocket=websocket,
                     server_events=server_events,
                 )
 
@@ -124,6 +126,7 @@ async def room_event_websocket(
                         event_type=event.event_type,
                         room_id=event.room_id,
                         user_id=current_user_id,
+                        job_id=current_job_id,
                         payload=ack_payload,
                     )
 
@@ -146,6 +149,7 @@ async def room_event_websocket(
                     exc=e,
                     room_id=connected_room_id,
                     user_id=current_user_id,
+                    job_id=current_job_id,
                     failed_event_type=get_raw_event_type(raw_data),
                 )
 
@@ -155,6 +159,7 @@ async def room_event_websocket(
                     exc=e,
                     room_id=connected_room_id or (event.room_id if event else None),
                     user_id=current_user_id,
+                    job_id=current_job_id,
                     failed_event_type=event.event_type if event else get_raw_event_type(raw_data),
                 )
 
@@ -260,12 +265,15 @@ async def handle_graph_interaction(
     user_id: UUID | None,
 ) -> dict | None:
     service = GraphInteractionService(db)
+    payload = payload_to_dict(event.payload)
+    if event.job_id is not None and "job_id" not in payload:
+        payload["job_id"] = event.job_id
 
     ack_payload = await service.handle_graph_interaction(
         event_type=event.event_type,
         room_id=event.room_id,
         user_id=user_id,
-        payload=payload_to_dict(event.payload),
+        payload=payload,
     )
 
     logger.info(
@@ -301,23 +309,20 @@ async def handle_utterance_create(
     return ws_events or []
 
 
-async def broadcast_server_events(
+async def send_server_events_to_requester(
     *,
-    room_id: UUID,
-    user_id: UUID | None,
+    websocket: WebSocket,
     server_events: list[Any],
 ) -> None:
     for server_event in server_events:
         try:
-            await room_ws_manager.broadcast_to_room(
-                room_id=room_id,
-                message=server_event,
+            await room_ws_manager.send_personal_message(
+                websocket,
+                server_event,
             )
-        except Exception as broadcast_error:
+        except Exception as send_error:
             logger.exception(
-                "[ws_server_event_broadcast_failed] room_id=%s | user_id=%s | event_type=%s | error=%s",
-                room_id,
-                user_id,
+                "[ws_server_event_send_failed] event_type=%s | error=%s",
                 server_event.get("event_type"),
-                str(broadcast_error),
+                str(send_error),
             )
