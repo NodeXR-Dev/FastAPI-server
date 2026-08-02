@@ -16,6 +16,7 @@ from app.api.generation import router as generation_router
 from app.api.history import router as history_router
 from app.api.part_node import router as part_node_router
 from app.api.reference import router as reference_router
+from app.api.graph import router as graph_router
 
 from app.core.response.exceptions import (
     BaseCustomException,
@@ -88,6 +89,11 @@ app.include_router(
 
 app.include_router(
     reference_router,
+    prefix="/api",
+)
+
+app.include_router(
+    graph_router,
     prefix="/api",
 )
 

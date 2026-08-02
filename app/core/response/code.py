@@ -26,6 +26,11 @@ class ResponseCode(str, Enum):
     NODE404 = "NODE404" # 노드 객체 없음
 
     # =========================
+    # Graph
+    # =========================
+    GRAPH200 = "GRAPH200"  # 회의실 그래프 복원 조회 성공
+
+    # =========================
     # Part Node
     # =========================
     PART_NODE200 = "PART_NODE200"  # 파트 노드 생성 성공
@@ -116,6 +121,8 @@ RESPONSE_MESSAGES = {
     ResponseCode.UTT404: "해당 발화 객체가 존재하지 않습니다.",
     
     ResponseCode.NODE404: "해당 노드 객체가 존재하지 않습니다.",
+
+    ResponseCode.GRAPH200: "노드 그래프 조회 성공",
 
     ResponseCode.PART_NODE200: "파트 노드 생성 성공",
     ResponseCode.PART_NODE201: "파트 노드 수정 성공",

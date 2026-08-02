@@ -156,6 +156,11 @@ class SubGraph(Base):
         nullable=False,
     )
 
+    deleted_at: Mapped[object | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     nodes: Mapped[list["Node"]] = relationship(
         back_populates="sub_graph",
     )
@@ -166,6 +171,7 @@ class SubGraph(Base):
 
     __table_args__ = (
         Index("ix_sub_graphs_room_id", "room_id"),
+        Index("ix_sub_graphs_room_deleted", "room_id", "deleted_at"),
     )
 
 class GraphEvent(Base):
