@@ -23,6 +23,7 @@ from app.agent.subgraph.memory_guard_graph import MemoryGuardGraph
 from app.agent.subgraph.rationale_recall_graph import RationaleRecallGraph
 from app.repository.topic_repository import TopicMatch
 from app.service.agent.asset_generation_adapter import AssetGenerationAdapter
+from app.service.websocket.connection_manager import RoomConnectionManager
 from app.service.agent.realtime_agent_result_service import RealtimeAgentResultService
 from app.service.utterance.auto_utterance_service import AutoUtteranceService
 from app.service.utterance.topic_routing_service import TopicRoutingService
@@ -455,6 +456,7 @@ def test_asset_adapter_enqueues_existing_2d_task_without_waiting():
     task_service.generate_from_features.assert_awaited_once_with(
         room_id=room_id,
         user_id=user_id,
+        job_id=None,
     )
     assert response == AgentResponse(
         response_type="ASSET_GENERATION",
@@ -499,26 +501,63 @@ def test_asset_enqueue_failure_does_not_drop_recall_response():
     assert events[1]["payload"]["message"] == "Asset 생성 요청을 처리하지 못했습니다."
 
 
-def test_websocket_broadcasts_all_prepared_utterance_and_agent_events(monkeypatch):
+def test_websocket_sends_all_prepared_events_only_to_request_socket(monkeypatch):
     manager = Mock()
-    manager.broadcast_to_room = AsyncMock(return_value=2)
+    manager.send_personal_message = AsyncMock()
     monkeypatch.setattr(ws_room_event, "room_ws_manager", manager)
-    room_id = uuid4()
+    websocket = Mock()
     events = [
         {"event_type": "UTTERANCE_CREATED"},
         {"event_type": "AGENT_GUIDE"},
     ]
 
     asyncio.run(
-        ws_room_event.broadcast_server_events(
-            room_id=room_id,
-            user_id=uuid4(),
+        ws_room_event.send_server_events_to_requester(
+            websocket=websocket,
             server_events=events,
         )
     )
 
-    assert manager.broadcast_to_room.await_count == 2
+    assert manager.send_personal_message.await_count == 2
     assert [
-        call.kwargs["message"]
-        for call in manager.broadcast_to_room.await_args_list
+        call.args[1]
+        for call in manager.send_personal_message.await_args_list
     ] == events
+    assert all(
+        call.args[0] is websocket
+        for call in manager.send_personal_message.await_args_list
+    )
+
+
+def test_connection_manager_sends_to_matching_user_without_room_multicast():
+    room_id = uuid4()
+    requester_id = uuid4()
+    other_user_id = uuid4()
+    requester_socket = Mock()
+    requester_socket.send_json = AsyncMock()
+    other_socket = Mock()
+    other_socket.send_json = AsyncMock()
+    manager = RoomConnectionManager()
+    manager.register(
+        room_id=room_id,
+        websocket=requester_socket,
+        user_id=requester_id,
+    )
+    manager.register(
+        room_id=room_id,
+        websocket=other_socket,
+        user_id=other_user_id,
+    )
+    message = {"event_type": "2D_GENERATED", "job_id": str(uuid4())}
+
+    sent = asyncio.run(
+        manager.send_to_user(
+            room_id=room_id,
+            user_id=requester_id,
+            message=message,
+        )
+    )
+
+    assert sent is True
+    requester_socket.send_json.assert_awaited_once_with(message)
+    other_socket.send_json.assert_not_awaited()

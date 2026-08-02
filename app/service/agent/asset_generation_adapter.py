@@ -6,7 +6,6 @@ from uuid import UUID
 from app.agent.schema.realtime_agent_schema import AgentResponse, GenerationRequest
 from app.core.logger import get_logger
 from app.db.session import SessionLocal
-from app.schema.generation.request import Generate3DRequest
 from app.service.generation.image_2d_generation_task_service import (
     Image2DGenerationTaskService,
 )
@@ -40,6 +39,7 @@ class AssetGenerationAdapter:
                 self.image_2d_task_service.generate_from_features(
                     room_id=room_id,
                     user_id=user_id,
+                    job_id=None,
                 )
             )
             return AgentResponse(
@@ -61,6 +61,8 @@ class AssetGenerationAdapter:
             self._spawn(
                 self.model_3d_service.run(
                     room_id=room_id,
+                    user_id=user_id,
+                    job_id=None,
                     source_asset_id=request.source_asset_id,
                 )
             )
@@ -80,12 +82,10 @@ class AssetGenerationAdapter:
     def _validate_3d_request(self, *, room_id: UUID, source_asset_id: UUID) -> None:
         db = SessionLocal()
         try:
-            self.model_3d_service.validate_request(
+            self.model_3d_service.validate_source_asset(
                 db=db,
-                request=Generate3DRequest(
-                    room_id=room_id,
-                    asset_id=source_asset_id,
-                ),
+                room_id=room_id,
+                source_asset_id=source_asset_id,
             )
         finally:
             db.close()

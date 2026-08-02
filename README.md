@@ -39,11 +39,11 @@ XR 회의에서는 아이디어, 결정사항, 제약조건, 논쟁점이 빠르
 | Client → Server | NODE_MOVE | 노드 위치 변경 |
 | Client → Server | NODE_TEXT_UPDATE | 노드 텍스트 수정 |
 | Client → Server | NODE_DELETE | 노드 삭제 |
-| Server → Client | GRAPH_UPDATED | 그래프 변경사항 broadcast |
-| Server → Client | AGENT_GUIDE | AI Agent 가이드 전달 |
-| Server → Client | 2D_GENERATED | 2D 생성 완료 |
-| Server → Client | 3D_GENERATED | 3D 생성 완료 |
-| Server → Client | ERROR | 에러 이벤트 |
+| Server → Request Client | GRAPH_UPDATED | 요청한 클라이언트의 그래프 처리 결과 |
+| Server → Request Client | AGENT_GUIDE | AI Agent 가이드 전달 |
+| Server → Request Client | 2D_GENERATED | 2D 생성 완료 (`job_id` 포함) |
+| Server → Request Client | 3D_GENERATED | 3D 생성 완료 (`job_id` 포함) |
+| Server → Request Client | ERROR | 에러 이벤트 (확보된 경우 `job_id` 포함) |
 
 ## 7. Swagger
 

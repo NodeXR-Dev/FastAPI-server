@@ -18,6 +18,7 @@ async def handle_ws_exception(
     exc: Exception,
     room_id: UUID | None,
     user_id: UUID | None,
+    job_id: UUID | None = None,
     failed_event_type: str | None = None,
 ) -> None:
     if isinstance(exc, ValidationError):
@@ -34,6 +35,7 @@ async def handle_ws_exception(
             room_id=room_id,
             user_id=user_id,
             code=ResponseCode.WS400,
+            job_id=job_id,
             failed_event_type=failed_event_type,
             detail=str(exc),
         )
@@ -54,6 +56,7 @@ async def handle_ws_exception(
             room_id=room_id,
             user_id=user_id,
             code=exc.code,
+            job_id=job_id,
             failed_event_type=exc.failed_event_type or failed_event_type,
             message=exc.message,
             detail=exc.detail,
@@ -75,6 +78,7 @@ async def handle_ws_exception(
             room_id=room_id,
             user_id=user_id,
             code=exc.code,
+            job_id=job_id,
             failed_event_type=failed_event_type,
             message=exc.message,
         )
@@ -93,6 +97,7 @@ async def handle_ws_exception(
         room_id=room_id,
         user_id=user_id,
         code=ResponseCode.WS500,
+        job_id=job_id,
         failed_event_type=failed_event_type,
         detail=str(exc),
     )

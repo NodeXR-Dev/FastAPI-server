@@ -8,6 +8,8 @@ from uuid import uuid4
 import pytest
 
 from app.core.response.code import ResponseCode
+from app.core.response.ws_response import ws_error_event, ws_success_event
+from app.core.ws_utils import get_raw_job_id
 from app.core.response.exceptions import NotFoundException
 from app.model.enum import NodeType
 from app.repository.graph_repository import GraphRepository
@@ -18,6 +20,39 @@ from app.schema.graph.part_node_request import (
 )
 from app.service.graph.graph_interaction_service import GraphInteractionService
 from app.service.graph.part_node_service import PartNodeService
+
+
+@pytest.mark.parametrize("event_type", ["NODE_CREATE", "EDGE_CREATE"])
+def test_graph_create_job_id_is_promoted_to_ws_metadata(event_type):
+    room_id = uuid4()
+    user_id = uuid4()
+    job_id = uuid4()
+    raw_event = {
+        "event_type": event_type,
+        "room_id": str(room_id),
+        "user_id": str(user_id),
+        "payload": {"job_id": str(job_id)},
+    }
+
+    correlated_job_id = get_raw_job_id(raw_event)
+    success = ws_success_event(
+        event_type=event_type,
+        room_id=room_id,
+        user_id=user_id,
+        job_id=correlated_job_id,
+        payload={},
+    )
+    error = ws_error_event(
+        room_id=room_id,
+        user_id=user_id,
+        job_id=correlated_job_id,
+        code=ResponseCode.WS500,
+        failed_event_type=event_type,
+    )
+
+    assert success["job_id"] == str(job_id)
+    assert error["job_id"] == str(job_id)
+    assert error["payload"]["failed_event_type"] == event_type
 
 
 def test_part_node_router_exposes_only_requested_mutation_paths():

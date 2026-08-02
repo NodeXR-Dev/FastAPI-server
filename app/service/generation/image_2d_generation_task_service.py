@@ -4,6 +4,9 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.core.logger import get_logger
+from app.core.response.code import ResponseCode
+from app.core.response.exceptions import BaseCustomException
+from app.core.response.ws_response import ws_error_event
 from app.db.session import SessionLocal
 from app.schema.generation.generation_result import Generated2DAssetResult
 from app.schema.generation.color_change_request import ColorChangeMetadataRequest
@@ -48,6 +51,8 @@ class Image2DGenerationTaskService:
         self,
         *,
         room_id: UUID,
+        user_id: UUID,
+        job_id: UUID,
         source_asset_id: UUID,
         graph_snapshot_id: UUID,
         guide_image_bytes: bytes,
@@ -58,8 +63,10 @@ class Image2DGenerationTaskService:
         )
 
         logger.info(
-            "[2d_color_change_task_started] room_id=%s | source_asset_id=%s | graph_snapshot_id=%s",
+            "[2d_color_change_task_started] room_id=%s | user_id=%s | job_id=%s | source_asset_id=%s | graph_snapshot_id=%s",
             room_id,
+            user_id,
+            job_id,
             source_asset_id,
             graph_snapshot_id,
         )
@@ -79,10 +86,19 @@ class Image2DGenerationTaskService:
                 source_asset_id,
                 str(error),
             )
+            await self._send_error_to_user(
+                room_id=room_id,
+                user_id=user_id,
+                job_id=job_id,
+                failed_event_type="2D_COLOR_CHANGED",
+                default_code=ResponseCode.IMG500,
+                error=error,
+            )
             return
 
         event = Image2DColorChangedWSEvent(
             room_id=room_id,
+            job_id=job_id,
             payload=Image2DColorChangedPayload(
                 asset_id=result.asset_id,
                 mime_type=result.mime_type,
@@ -93,8 +109,9 @@ class Image2DGenerationTaskService:
         )
 
         try:
-            await self.ws_manager.broadcast_to_room(
+            await self.ws_manager.send_to_user(
                 room_id=room_id,
+                user_id=user_id,
                 message=event.model_dump(mode="json"),
             )
         except Exception as error:
@@ -117,12 +134,14 @@ class Image2DGenerationTaskService:
         *,
         room_id: UUID,
         user_id: UUID,
+        job_id: UUID,
         graph_snapshot_id: UUID,
         connections: list[Connection2D],
     ) -> None:
         await self._run(
             room_id=room_id,
             user_id=user_id,
+            job_id=job_id,
             graph_snapshot_id=graph_snapshot_id,
             generation_call=lambda db: Image2DGenerationService(db=db).generate(
                 room_id=room_id,
@@ -137,10 +156,12 @@ class Image2DGenerationTaskService:
         *,
         room_id: UUID,
         user_id: UUID | None,
+        job_id: UUID | None,
     ) -> None:
         await self._run(
             room_id=room_id,
             user_id=user_id,
+            job_id=job_id,
             graph_snapshot_id=None,
             generation_call=lambda db: Image2DFeatureGenerationService(db=db).generate(
                 room_id=room_id,
@@ -153,44 +174,78 @@ class Image2DGenerationTaskService:
         *,
         room_id: UUID,
         user_id: UUID | None,
+        job_id: UUID | None,
         graph_snapshot_id: UUID | None,
         generation_call: GenerationCall,
     ) -> None:
         db = self.session_factory()
 
         logger.info(
-            "[2d_generation_task_started] room_id=%s | user_id=%s | graph_snapshot_id=%s",
+            "[2d_generation_task_started] room_id=%s | user_id=%s | job_id=%s | graph_snapshot_id=%s",
             room_id,
             user_id,
+            job_id,
             graph_snapshot_id,
         )
 
         try:
-            result = await generation_call(db)
-            event = Image2DGeneratedWSEvent(
-                room_id=room_id,
-                user_id=user_id,
-                payload=Image2DAssetPayload(
-                    asset_id=result.asset_id,
-                    mime_type=result.mime_type,
-                    width=result.width,
-                    height=result.height,
-                    img_url=result.img_url,
-                ),
-            )
-
-            message = event.model_dump(mode="json")
-            if user_id is None:
-                await self.ws_manager.broadcast_to_room(
-                    room_id=room_id,
-                    message=message,
-                )
-            else:
-                await self.ws_manager.send_to_user(
+            try:
+                result = await generation_call(db)
+                event = Image2DGeneratedWSEvent(
                     room_id=room_id,
                     user_id=user_id,
-                    message=message,
+                    job_id=job_id,
+                    payload=Image2DAssetPayload(
+                        asset_id=result.asset_id,
+                        mime_type=result.mime_type,
+                        width=result.width,
+                        height=result.height,
+                        img_url=result.img_url,
+                    ),
                 )
+            except Exception as error:
+                db.rollback()
+                logger.exception(
+                    "[2d_generation_task_failed] room_id=%s | graph_snapshot_id=%s | error=%s",
+                    room_id,
+                    graph_snapshot_id,
+                    str(error),
+                )
+                if user_id is not None:
+                    await self._send_error_to_user(
+                        room_id=room_id,
+                        user_id=user_id,
+                        job_id=job_id,
+                        failed_event_type="2D_GENERATED",
+                        default_code=ResponseCode.IMG500,
+                        error=error,
+                    )
+                return
+
+            try:
+                if user_id is None:
+                    logger.warning(
+                        "[2d_generation_ws_skipped] missing requester | room_id=%s | job_id=%s | asset_id=%s",
+                        room_id,
+                        job_id,
+                        result.asset_id,
+                    )
+                else:
+                    await self.ws_manager.send_to_user(
+                        room_id=room_id,
+                        user_id=user_id,
+                        message=event.model_dump(mode="json"),
+                    )
+            except Exception as error:
+                logger.exception(
+                    "[2d_generation_ws_failed_after_commit] room_id=%s | user_id=%s | job_id=%s | asset_id=%s | error=%s",
+                    room_id,
+                    user_id,
+                    job_id,
+                    result.asset_id,
+                    str(error),
+                )
+                return
 
             logger.info(
                 "[2d_generation_task_completed] room_id=%s | graph_snapshot_id=%s | asset_id=%s",
@@ -198,20 +253,49 @@ class Image2DGenerationTaskService:
                 graph_snapshot_id,
                 result.asset_id,
             )
-
-        except Exception as error:
-            db.rollback()
-            logger.exception(
-                "[2d_generation_task_failed] room_id=%s | graph_snapshot_id=%s | error=%s",
-                room_id,
-                graph_snapshot_id,
-                str(error),
-            )
-
         finally:
             db.close()
             logger.info(
                 "[2d_generation_task_db_closed] room_id=%s | graph_snapshot_id=%s",
                 room_id,
                 graph_snapshot_id,
+            )
+
+    async def _send_error_to_user(
+        self,
+        *,
+        room_id: UUID,
+        user_id: UUID,
+        job_id: UUID | None,
+        failed_event_type: str,
+        default_code: ResponseCode,
+        error: Exception,
+    ) -> None:
+        code = error.code if isinstance(error, BaseCustomException) else default_code
+
+        try:
+            await self.ws_manager.send_to_user(
+                room_id=room_id,
+                user_id=user_id,
+                message=ws_error_event(
+                    room_id=room_id,
+                    user_id=user_id,
+                    job_id=job_id,
+                    code=code,
+                    failed_event_type=failed_event_type,
+                    message=(
+                        error.message
+                        if isinstance(error, BaseCustomException)
+                        else None
+                    ),
+                ),
+            )
+        except Exception as send_error:
+            logger.exception(
+                "[2d_generation_error_ws_failed] room_id=%s | user_id=%s | job_id=%s | failed_event_type=%s | error=%s",
+                room_id,
+                user_id,
+                job_id,
+                failed_event_type,
+                str(send_error),
             )

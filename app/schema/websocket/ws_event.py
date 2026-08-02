@@ -23,6 +23,7 @@ class WSEvent(BaseModel):
     event_type: NotBlankStr
     room_id: UUID
     user_id: UUID | None=None
+    job_id: UUID | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 class WSConnectWSEvent(WSEvent):
@@ -36,11 +37,13 @@ class Image2DGeneratedWSEvent(WSEvent):
 class Image2DColorChangedWSEvent(BaseModel):
     event_type: Literal["2D_COLOR_CHANGED"] = "2D_COLOR_CHANGED"
     room_id: UUID
+    job_id: UUID
     payload: Image2DColorChangedPayload
 
 class Model3DGeneratedWSEvent(BaseModel):
     event_type: Literal["3D_GENERATED"] = "3D_GENERATED"
     room_id: UUID
+    job_id: UUID | None = None
     payload: Model3DAssetPayload
 
 

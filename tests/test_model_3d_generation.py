@@ -77,6 +77,8 @@ def test_3d_router_returns_exact_202_and_registers_background_task(monkeypatch):
 
     app.dependency_overrides[get_db] = override_db
     room_id = uuid4()
+    user_id = uuid4()
+    job_id = uuid4()
     source_asset_id = uuid4()
     service = Mock()
     service.run = AsyncMock()
@@ -86,6 +88,8 @@ def test_3d_router_returns_exact_202_and_registers_background_task(monkeypatch):
         "/api/3d/generate",
         json={
             "room_id": str(room_id),
+            "user_id": str(user_id),
+            "job_id": str(job_id),
             "asset_id": str(source_asset_id),
         },
     )
@@ -95,16 +99,20 @@ def test_3d_router_returns_exact_202_and_registers_background_task(monkeypatch):
         "isSuccess": True,
         "code": "3D200",
         "message": "3D 생성 요청 성공",
-        "result": {},
+        "result": {"job_id": str(job_id)},
     }
     service.validate_request.assert_called_once()
     request = service.validate_request.call_args.kwargs["request"]
     assert request == Generate3DRequest(
         room_id=room_id,
+        user_id=user_id,
+        job_id=job_id,
         asset_id=source_asset_id,
     )
     service.run.assert_awaited_once_with(
         room_id=room_id,
+        user_id=user_id,
+        job_id=job_id,
         source_asset_id=source_asset_id,
     )
 
@@ -120,6 +128,8 @@ def test_3d_request_openapi_contract_is_json_with_202_response():
 
 def test_3d_validation_accepts_active_room_managed_2d_asset():
     room_id = uuid4()
+    user_id = uuid4()
+    job_id = uuid4()
     source_asset_id = uuid4()
     service, _, _, _, source_asset = configured_service(
         room_id=room_id,
@@ -128,7 +138,12 @@ def test_3d_validation_accepts_active_room_managed_2d_asset():
 
     result = service.validate_request(
         db=Mock(),
-        request=Generate3DRequest(room_id=room_id, asset_id=source_asset_id),
+        request=Generate3DRequest(
+            room_id=room_id,
+            user_id=user_id,
+            job_id=job_id,
+            asset_id=source_asset_id,
+        ),
     )
 
     assert result is source_asset
@@ -179,6 +194,8 @@ def test_3d_validation_rejects_invalid_source_asset(asset):
             db=Mock(),
             request=Generate3DRequest(
                 room_id=room_id,
+                user_id=uuid4(),
+                job_id=uuid4(),
                 asset_id=source_asset_id,
             ),
         )
@@ -515,25 +532,36 @@ def test_3d_cleanup_failure_does_not_replace_database_error():
     storage.delete_uploaded_model.assert_called_once()
 
 
-def test_3d_success_broadcasts_exact_event_after_generate_returns():
+def test_3d_success_sends_exact_event_only_to_requester_after_generate_returns():
     room_id = uuid4()
+    user_id = uuid4()
+    job_id = uuid4()
     result = Generated3DAssetResult(
         asset_id=uuid4(),
         mime_type="model/gltf-binary",
         model_url="https://assets.example/3d/model.glb",
     )
     ws_manager = Mock()
-    ws_manager.broadcast_to_room = AsyncMock(return_value=2)
+    ws_manager.send_to_user = AsyncMock(return_value=True)
     service = Model3DGenerationService(ws_manager=ws_manager)
     service.generate = AsyncMock(return_value=result)
 
-    asyncio.run(service.run(room_id=room_id, source_asset_id=uuid4()))
+    asyncio.run(
+        service.run(
+            room_id=room_id,
+            user_id=user_id,
+            job_id=job_id,
+            source_asset_id=uuid4(),
+        )
+    )
 
-    ws_manager.broadcast_to_room.assert_awaited_once_with(
+    ws_manager.send_to_user.assert_awaited_once_with(
         room_id=room_id,
+        user_id=user_id,
         message={
             "event_type": "3D_GENERATED",
             "room_id": str(room_id),
+            "job_id": str(job_id),
             "payload": {
                 "asset_id": str(result.asset_id),
                 "mime_type": "model/gltf-binary",
@@ -543,15 +571,29 @@ def test_3d_success_broadcasts_exact_event_after_generate_returns():
     )
 
 
-def test_3d_failure_does_not_broadcast_success_event():
+def test_3d_failure_sends_correlated_error_without_success_event():
     ws_manager = Mock()
-    ws_manager.broadcast_to_room = AsyncMock()
+    ws_manager.send_to_user = AsyncMock()
     service = Model3DGenerationService(ws_manager=ws_manager)
     service.generate = AsyncMock(side_effect=RuntimeError("generation failed"))
+    room_id = uuid4()
+    user_id = uuid4()
+    job_id = uuid4()
 
-    asyncio.run(service.run(room_id=uuid4(), source_asset_id=uuid4()))
+    asyncio.run(
+        service.run(
+            room_id=room_id,
+            user_id=user_id,
+            job_id=job_id,
+            source_asset_id=uuid4(),
+        )
+    )
 
-    ws_manager.broadcast_to_room.assert_not_awaited()
+    ws_manager.send_to_user.assert_awaited_once()
+    message = ws_manager.send_to_user.call_args.kwargs["message"]
+    assert message["event_type"] == "ERROR"
+    assert message["job_id"] == str(job_id)
+    assert message["payload"]["failed_event_type"] == "3D_GENERATED"
 
 
 def test_3d_websocket_failure_does_not_retry_or_rollback_generation():
@@ -561,14 +603,21 @@ def test_3d_websocket_failure_does_not_retry_or_rollback_generation():
         model_url="https://assets.example/3d/model.glb",
     )
     ws_manager = Mock()
-    ws_manager.broadcast_to_room = AsyncMock(side_effect=RuntimeError("ws failed"))
+    ws_manager.send_to_user = AsyncMock(side_effect=RuntimeError("ws failed"))
     service = Model3DGenerationService(ws_manager=ws_manager)
     service.generate = AsyncMock(return_value=result)
 
-    asyncio.run(service.run(room_id=uuid4(), source_asset_id=uuid4()))
+    asyncio.run(
+        service.run(
+            room_id=uuid4(),
+            user_id=uuid4(),
+            job_id=uuid4(),
+            source_asset_id=uuid4(),
+        )
+    )
 
     service.generate.assert_awaited_once()
-    ws_manager.broadcast_to_room.assert_awaited_once()
+    ws_manager.send_to_user.assert_awaited_once()
 
 
 def test_model_storage_reuses_bucket_and_writes_glb_content_type():

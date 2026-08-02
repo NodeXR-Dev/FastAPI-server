@@ -33,6 +33,8 @@ def test_generate_features_request_rejects_text_without_meaning(feature_text):
     with pytest.raises(ValidationError):
         GenerateFeaturesRequest(
             room_id=uuid4(),
+            user_id=uuid4(),
+            job_id=uuid4(),
             feature_text=feature_text,
         )
 
@@ -118,6 +120,8 @@ def test_generate_features_saves_all_extracted_features_in_one_transaction():
     )
     request = GenerateFeaturesRequest(
         room_id=room_id,
+        user_id=uuid4(),
+        job_id=uuid4(),
         feature_text="전체 기능 대화 내용",
     )
 
@@ -159,6 +163,8 @@ def test_generate_features_rolls_back_complete_batch_when_persistence_fails():
             service.generate_features(
                 request=GenerateFeaturesRequest(
                     room_id=uuid4(),
+                    user_id=uuid4(),
+                    job_id=uuid4(),
                     feature_text="두 기능에 관한 대화",
                 ),
                 db=Mock(),
@@ -187,6 +193,8 @@ def test_generate_features_rejects_inactive_room_before_openai_call():
             service.generate_features(
                 request=GenerateFeaturesRequest(
                     room_id=uuid4(),
+                    user_id=uuid4(),
+                    job_id=uuid4(),
                     feature_text="접이식 손잡이 기능",
                 ),
                 db=Mock(),
@@ -199,9 +207,13 @@ def test_generate_features_rejects_inactive_room_before_openai_call():
 
 def test_feature_api_registers_existing_2d_feature_generation_after_save(monkeypatch):
     room_id = uuid4()
+    user_id = uuid4()
+    job_id = uuid4()
     feature_id = uuid4()
     request = GenerateFeaturesRequest(
         room_id=room_id,
+        user_id=user_id,
+        job_id=job_id,
         feature_text="접이식 손잡이가 필요해",
     )
     result = FeatureListResponse(
@@ -238,7 +250,12 @@ def test_feature_api_registers_existing_2d_feature_generation_after_save(monkeyp
     assert len(background_tasks.tasks) == 1
     task = background_tasks.tasks[0]
     assert task.func is task_service.generate_from_features
-    assert task.kwargs == {"room_id": room_id, "user_id": None}
+    assert task.kwargs == {
+        "room_id": room_id,
+        "user_id": user_id,
+        "job_id": job_id,
+    }
+    assert response["result"]["job_id"] == str(job_id)
 
 
 def test_feature_image_prompt_contains_db_feature_context_as_product_requirements():
@@ -257,13 +274,14 @@ def test_feature_image_prompt_contains_db_feature_context_as_product_requirement
     assert "actual product design" in prompt
 
 
-def test_feature_generation_without_user_broadcasts_existing_completion_event():
+def test_feature_generation_sends_completion_only_to_requester():
     room_id = uuid4()
+    user_id = uuid4()
+    job_id = uuid4()
     asset_id = uuid4()
     db = Mock()
     ws_manager = Mock()
-    ws_manager.broadcast_to_room = AsyncMock(return_value=1)
-    ws_manager.send_to_user = AsyncMock()
+    ws_manager.send_to_user = AsyncMock(return_value=True)
     service = Image2DGenerationTaskService(
         session_factory=Mock(return_value=db),
         ws_manager=ws_manager,
@@ -281,14 +299,17 @@ def test_feature_generation_without_user_broadcasts_existing_completion_event():
     asyncio.run(
         service._run(
             room_id=room_id,
-            user_id=None,
+            user_id=user_id,
+            job_id=job_id,
             graph_snapshot_id=None,
             generation_call=generation_call,
         )
     )
 
-    ws_manager.send_to_user.assert_not_awaited()
-    message = ws_manager.broadcast_to_room.call_args.kwargs["message"]
+    ws_manager.send_to_user.assert_awaited_once()
+    assert ws_manager.send_to_user.call_args.kwargs["user_id"] == user_id
+    message = ws_manager.send_to_user.call_args.kwargs["message"]
     assert message["event_type"] == "2D_GENERATED"
-    assert message["user_id"] is None
+    assert message["user_id"] == str(user_id)
+    assert message["job_id"] == str(job_id)
     assert message["payload"]["asset_id"] == str(asset_id)

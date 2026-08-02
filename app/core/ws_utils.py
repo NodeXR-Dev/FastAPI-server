@@ -58,3 +58,20 @@ def get_raw_event_type(raw_data: Any) -> str | None:
         return raw_data.get("event_type")
 
     return None
+
+
+def get_raw_job_id(raw_data: Any) -> UUID | None:
+    if not isinstance(raw_data, dict):
+        return None
+
+    raw_job_id = raw_data.get("job_id")
+    if raw_job_id is None and isinstance(raw_data.get("payload"), dict):
+        raw_job_id = raw_data["payload"].get("job_id")
+
+    if raw_job_id is None:
+        return None
+
+    try:
+        return UUID(str(raw_job_id))
+    except (TypeError, ValueError):
+        return None
