@@ -1,7 +1,7 @@
 from collections.abc import Iterable
 from uuid import UUID
 
-from sqlalchemy import case, or_
+from sqlalchemy import case, or_, select
 from sqlalchemy.orm import Session
 
 from app.agent.schema.realtime_agent_schema import (
@@ -14,6 +14,7 @@ from app.model.enum import (
     DesignFactLinkType,
     DesignFactStatus,
     DesignFactType,
+    DesignFactUtteranceLinkRole,
     MemoryStatus,
     SemanticMemoryType,
 )
@@ -27,6 +28,245 @@ from app.model.memory import (
 
 
 class MemoryRepository:
+    def find_batch_facts(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        topic_ids: list[UUID],
+        related_fact_ids: list[UUID],
+        limit: int,
+    ) -> list[DesignFact]:
+        filters = []
+        if topic_ids:
+            filters.append(DesignFact.topic_id.in_(topic_ids))
+        if related_fact_ids:
+            filters.append(DesignFact.design_fact_id.in_(related_fact_ids))
+        if not filters:
+            return []
+        stmt = (
+            select(DesignFact)
+            .where(
+                DesignFact.room_id == room_id,
+                DesignFact.status != DesignFactStatus.SUPERSEDED,
+                or_(*filters),
+            )
+            .order_by(DesignFact.created_at.desc(), DesignFact.design_fact_id.asc())
+            .limit(limit)
+        )
+        return list(db.scalars(stmt).all())
+
+    def find_batch_memories(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        topic_ids: list[UUID],
+        limit: int,
+    ) -> list[SemanticMemory]:
+        if not topic_ids:
+            return []
+        stmt = (
+            select(SemanticMemory)
+            .where(
+                SemanticMemory.room_id == room_id,
+                SemanticMemory.topic_id.in_(topic_ids),
+                SemanticMemory.status == MemoryStatus.ACTIVE,
+            )
+            .order_by(
+                SemanticMemory.created_at.desc(),
+                SemanticMemory.semantic_memory_id.asc(),
+            )
+            .limit(limit)
+        )
+        return list(db.scalars(stmt).all())
+
+    def find_fact_entities_by_ids(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        fact_ids: list[UUID],
+    ) -> list[DesignFact]:
+        if not fact_ids:
+            return []
+        stmt = select(DesignFact).where(
+            DesignFact.room_id == room_id,
+            DesignFact.design_fact_id.in_(fact_ids),
+        )
+        return list(db.scalars(stmt).all())
+
+    def find_similar_facts(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        topic_id: UUID,
+        fact_type: DesignFactType,
+        embedding: list[float],
+        limit: int = 3,
+    ) -> list[tuple[DesignFact, float]]:
+        distance = DesignFact.embedding.cosine_distance(embedding)
+        rows = (
+            db.query(DesignFact, distance.label("cosine_distance"))
+            .filter(
+                DesignFact.room_id == room_id,
+                DesignFact.topic_id == topic_id,
+                DesignFact.fact_type == fact_type,
+                DesignFact.status.in_(
+                    [DesignFactStatus.ACTIVE, DesignFactStatus.CONFIRMED]
+                ),
+                DesignFact.embedding.isnot(None),
+            )
+            .order_by(distance.asc(), DesignFact.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            (fact, max(-1.0, min(1.0, 1.0 - float(cosine_distance))))
+            for fact, cosine_distance in rows
+        ]
+
+    def create_fact(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        topic_id: UUID,
+        fact_type: DesignFactType,
+        content: str,
+        embedding: list[float],
+    ) -> DesignFact:
+        fact = DesignFact(
+            room_id=room_id,
+            topic_id=topic_id,
+            fact_type=fact_type,
+            status=DesignFactStatus.ACTIVE,
+            content=content,
+            embedding=embedding,
+        )
+        db.add(fact)
+        db.flush()
+        return fact
+
+    def update_fact(
+        self,
+        db: Session,
+        *,
+        fact: DesignFact,
+        content: str,
+        embedding: list[float],
+    ) -> DesignFact:
+        fact.content = content
+        fact.embedding = embedding
+        db.flush()
+        return fact
+
+    def mark_fact_superseded(self, fact: DesignFact) -> None:
+        fact.status = DesignFactStatus.SUPERSEDED
+
+    def ensure_fact_utterance_link(
+        self,
+        db: Session,
+        *,
+        fact_id: UUID,
+        utterance_id: UUID,
+        role: DesignFactUtteranceLinkRole = DesignFactUtteranceLinkRole.SOURCE,
+    ) -> bool:
+        existing = db.scalar(
+            select(DesignFactUtteranceLink).where(
+                DesignFactUtteranceLink.design_fact_id == fact_id,
+                DesignFactUtteranceLink.utterance_id == utterance_id,
+                DesignFactUtteranceLink.link_role == role,
+            )
+        )
+        if existing is not None:
+            return False
+        db.add(
+            DesignFactUtteranceLink(
+                design_fact_id=fact_id,
+                utterance_id=utterance_id,
+                link_role=role,
+            )
+        )
+        db.flush()
+        return True
+
+    def ensure_fact_link(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        from_fact_id: UUID,
+        to_fact_id: UUID,
+        link_type: DesignFactLinkType,
+    ) -> bool:
+        existing = db.scalar(
+            select(DesignFactLink).where(
+                DesignFactLink.from_fact_id == from_fact_id,
+                DesignFactLink.to_fact_id == to_fact_id,
+                DesignFactLink.link_type == link_type,
+            )
+        )
+        if existing is not None:
+            return False
+        db.add(
+            DesignFactLink(
+                room_id=room_id,
+                from_fact_id=from_fact_id,
+                to_fact_id=to_fact_id,
+                link_type=link_type,
+            )
+        )
+        db.flush()
+        return True
+
+    def upsert_semantic_memory(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        topic_id: UUID,
+        memory_type: SemanticMemoryType,
+        content: str,
+        embedding: list[float],
+    ) -> SemanticMemory:
+        memory = db.scalar(
+            select(SemanticMemory)
+            .where(
+                SemanticMemory.room_id == room_id,
+                SemanticMemory.topic_id == topic_id,
+                SemanticMemory.memory_type == memory_type,
+                SemanticMemory.status == MemoryStatus.ACTIVE,
+            )
+            .order_by(SemanticMemory.created_at.desc())
+            .limit(1)
+        )
+        if memory is None:
+            memory = SemanticMemory(
+                room_id=room_id,
+                topic_id=topic_id,
+                memory_type=memory_type,
+                status=MemoryStatus.ACTIVE,
+                content=content,
+                embedding=embedding,
+            )
+            db.add(memory)
+        else:
+            memory.content = content
+            memory.embedding = embedding
+        db.flush()
+        return memory
+
+    def attach_facts_to_memory(
+        self,
+        facts: list[DesignFact],
+        *,
+        semantic_memory_id: UUID,
+    ) -> None:
+        for fact in facts:
+            fact.semantic_memory_id = semantic_memory_id
+
     def retrieve_facts(
         self,
         db: Session,

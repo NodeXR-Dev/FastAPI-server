@@ -48,6 +48,7 @@ class DesignFactStatus(str, enum.Enum):
     ACTIVE = "ACTIVE"
     CONFIRMED = "CONFIRMED"
     REJECTED = "REJECTED"
+    SUPERSEDED = "SUPERSEDED"
 
 
 class DesignFactLinkType(str, enum.Enum):

@@ -77,6 +77,7 @@ class Utterance(Base):
         Index("ix_utterances_room_id", "room_id"),
         Index("ix_utterances_user_id", "user_id"),
         Index("ix_utterances_topic_id", "topic_id"),
+        Index("ix_utterances_state_room", "state", "room_id"),
         Index("ix_utterances_created_at", "created_at"),
     )
 
