@@ -41,7 +41,7 @@ class Image2DAssetGenerationService:
         self,
         *,
         room_id: UUID,
-        user_id: UUID,
+        user_id: UUID | None,
         graph_snapshot_id: UUID | None,
         prompt_text: str,
     ) -> Generated2DAssetResult:

@@ -136,7 +136,7 @@ class Image2DGenerationTaskService:
         self,
         *,
         room_id: UUID,
-        user_id: UUID,
+        user_id: UUID | None,
     ) -> None:
         await self._run(
             room_id=room_id,
@@ -152,7 +152,7 @@ class Image2DGenerationTaskService:
         self,
         *,
         room_id: UUID,
-        user_id: UUID,
+        user_id: UUID | None,
         graph_snapshot_id: UUID | None,
         generation_call: GenerationCall,
     ) -> None:
@@ -179,11 +179,18 @@ class Image2DGenerationTaskService:
                 ),
             )
 
-            await self.ws_manager.send_to_user(
-                room_id=room_id,
-                user_id=user_id,
-                message=event.model_dump(mode="json"),
-            )
+            message = event.model_dump(mode="json")
+            if user_id is None:
+                await self.ws_manager.broadcast_to_room(
+                    room_id=room_id,
+                    message=message,
+                )
+            else:
+                await self.ws_manager.send_to_user(
+                    room_id=room_id,
+                    user_id=user_id,
+                    message=message,
+                )
 
             logger.info(
                 "[2d_generation_task_completed] room_id=%s | graph_snapshot_id=%s | asset_id=%s",

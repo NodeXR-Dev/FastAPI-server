@@ -1,6 +1,17 @@
 from langchain_core.prompts import ChatPromptTemplate
 
 
+FACT_RELATIONSHIP_RULES = """
+- SUPPORTS: ARGUMENT_FOR or RATIONALE -> PROPOSAL, DECISION, or CONFLICT
+- OPPOSES: ARGUMENT_AGAINST -> PROPOSAL, DECISION, or CONFLICT
+- CONSTRAINS: CONSTRAINT -> PROPOSAL or DECISION
+- CONFLICTS_WITH: PROPOSAL, DECISION, CONSTRAINT, or CONFLICT -> a different one of those types
+- RATIONALE_OF: RATIONALE -> PROPOSAL or DECISION
+- RESOLVES: DECISION -> CONFLICT
+- VIOLATES: PROPOSAL or DECISION -> CONSTRAINT
+""".strip()
+
+
 REFLECTION_BATCH_ANALYZER_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
@@ -14,17 +25,42 @@ Use concise standalone Korean fact text. Do not emit low-value chat, greetings, 
 
 References use reference_type EXISTING with a supplied design_fact_id, or CANDIDATE with a temp_id from this response.
 Allowed relationships:
-- SUPPORTS: ARGUMENT_FOR or RATIONALE -> PROPOSAL, DECISION, or CONFLICT
-- OPPOSES: ARGUMENT_AGAINST -> PROPOSAL, DECISION, or CONFLICT
-- CONSTRAINS: CONSTRAINT -> PROPOSAL or DECISION
-- CONFLICTS_WITH: PROPOSAL, DECISION, CONSTRAINT, or CONFLICT -> a different one of those types
-- RATIONALE_OF: RATIONALE -> PROPOSAL or DECISION
-- RESOLVES: DECISION -> CONFLICT
-- VIOLATES: PROPOSAL or DECISION -> CONSTRAINT
+{relationship_rules}
 Do not create self-links. Confidence is a relative extraction signal, not a calibrated probability.
-Return structured output only.""",
+Return structured output only.""".format(
+                relationship_rules=FACT_RELATIONSHIP_RULES,
+            ),
         ),
         ("human", "Batch context:\n{batch_context_json}"),
+    ]
+)
+
+
+REFLECTION_BATCH_RELATIONSHIP_REPAIR_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """Repair only invalid relationship types or directions in a previously structured reflection batch analysis.
+Keep the facts, temp_ids, fact types, provenance, topic_ids, content, and confidence values unchanged.
+Return the complete analysis with corrected links. Remove a link if it cannot be corrected without inventing meaning.
+
+Allowed relationships:
+{relationship_rules}
+Do not create self-links. Return structured output only.""".format(
+                relationship_rules=FACT_RELATIONSHIP_RULES,
+            ),
+        ),
+        (
+            "human",
+            """Batch context:
+{batch_context_json}
+
+Previous analysis:
+{analysis_json}
+
+Validation error:
+{validation_error}""",
+        ),
     ]
 )
 
@@ -76,4 +112,3 @@ Return exactly one summary for each supplied topic_id and no other topic.""",
         ("human", "Changed topic context:\n{topic_context_json}"),
     ]
 )
-

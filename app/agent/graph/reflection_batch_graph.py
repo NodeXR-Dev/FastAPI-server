@@ -11,7 +11,13 @@ from app.agent.schema.reflection_batch_schema import (
     BatchAnalysisResult,
 )
 from app.agent.state.reflection_batch_state import ReflectionBatchState
-from app.service.agent.reflection_batch_service import ReflectionBatchService
+from app.core.logger import get_logger
+from app.service.agent.reflection_batch_service import (
+    InvalidFactRelationshipError,
+    ReflectionBatchService,
+)
+
+logger = get_logger(__name__)
 
 
 class ReflectionBatchGraph:
@@ -134,14 +140,61 @@ class ReflectionBatchGraph:
         context = self._require_context(state)
         return {"analysis_result": await self.node.analyze(context)}
 
-    def validate_analysis(self, state: ReflectionBatchState) -> dict:
+    async def validate_analysis(self, state: ReflectionBatchState) -> dict:
         context = self._require_context(state)
         analysis = state["analysis_result"] or BatchAnalysisResult()
-        return {
-            "analysis_result": self.service.validate_analysis(
+
+        try:
+            validated = self.service.validate_analysis(
                 context=context,
                 analysis=analysis,
             )
+        except InvalidFactRelationshipError as error:
+            logger.warning(
+                "[reflection_relationship_repair_started] room_id=%s | error=%s",
+                state["room_id"],
+                str(error),
+            )
+            try:
+                repaired_analysis = await self.node.repair_analysis_relationships(
+                    context=context,
+                    analysis=analysis,
+                    validation_error=str(error),
+                )
+                relationship_repair = BatchAnalysisResult(
+                    facts=analysis.facts,
+                    links=repaired_analysis.links,
+                )
+                validated = self.service.validate_analysis(
+                    context=context,
+                    analysis=relationship_repair,
+                    discard_invalid_relationships=True,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as repair_error:
+                logger.exception(
+                    "[reflection_relationship_repair_failed] room_id=%s | error=%s",
+                    state["room_id"],
+                    str(repair_error),
+                )
+                repaired_analysis = analysis
+                validated = self.service.validate_analysis(
+                    context=context,
+                    analysis=analysis,
+                    discard_invalid_relationships=True,
+                )
+            logger.info(
+                "[reflection_relationship_repair_completed] room_id=%s | "
+                "original_link_count=%s | repaired_link_count=%s | accepted_link_count=%s",
+                state["room_id"],
+                len(analysis.links),
+                len(repaired_analysis.links),
+                len(validated.links),
+            )
+
+        return {
+            "analysis_result": validated,
         }
 
     async def deduplicate_facts(self, state: ReflectionBatchState) -> dict:

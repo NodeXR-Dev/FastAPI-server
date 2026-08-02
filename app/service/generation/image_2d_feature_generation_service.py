@@ -37,7 +37,7 @@ class Image2DFeatureGenerationService:
         self,
         *,
         room_id: UUID,
-        user_id: UUID,
+        user_id: UUID | None,
     ) -> Generated2DAssetResult:
         logger.info(
             "[image_2d_feature_generation_started] room_id=%s | user_id=%s ",

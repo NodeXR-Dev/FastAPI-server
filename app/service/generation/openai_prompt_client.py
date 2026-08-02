@@ -1,5 +1,9 @@
 from openai import AsyncOpenAI
 
+from app.ai.prompts.feature_image_prompt import (
+    FEATURE_IMAGE_SYSTEM_PROMPT,
+    build_feature_image_prompt,
+)
 from app.core.config import settings
 from app.core.logger import get_logger
 
@@ -11,75 +15,47 @@ class OpenAIPromptClient:
         self.client = AsyncOpenAI(
             api_key=settings.OPENAI_API_KEY,
         )
+
     async def generate_feature_image_prompt(
         self,
         *,
         context_text: str,
     ) -> str:
-            logger.info(
-                "[openai_feature_prompt_generation_started] model=%s | context_length=%s",
-                settings.OPENAI_PROMPT_MODEL,
-                len(context_text),
-            )
+        logger.info(
+            "[openai_feature_prompt_generation_started] model=%s | context_length=%s",
+            settings.OPENAI_PROMPT_MODEL,
+            len(context_text),
+        )
 
-            system_prompt = """
-    You are an expert prompt engineer for educational product and craft concept image generation.
+        response = await self.client.responses.create(
+            model=settings.OPENAI_PROMPT_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": FEATURE_IMAGE_SYSTEM_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": build_feature_image_prompt(context_text),
+                },
+            ],
+        )
 
-    Your job:
-    - Read the classroom project topic and feature requirements.
-    - Create one high-quality English prompt for an image generation model.
-    - The image should be suitable for elementary school students' making/team project.
-    - The result should look like a clear 2D concept sketch or poster-style design.
-    - Reflect all feature requirements.
-    - Use child-friendly, safe, simple, and easy-to-understand visual language.
-    - Return ONLY the final English image generation prompt.
-    - Do not output explanations, headings, bullet points, markdown, or JSON.
-            """.strip()
+        prompt_text = response.output_text.strip()
 
-            user_prompt = f"""
-    Below is structured context for an elementary school making/team project.
+        if not prompt_text:
+            raise ValueError("OpenAI가 빈 feature 기반 이미지 프롬프트를 반환했습니다.")
 
-    {context_text}
+        logger.info(
+            "[openai_feature_prompt_generation_completed] prompt_length=%s",
+            len(prompt_text),
+        )
+        logger.info(
+            "[openai_feature_prompt_generated] prompt=%s",
+            prompt_text,
+        )
 
-    Generate one polished English image prompt.
-
-    Requirements:
-    1. The prompt must describe one coherent 2D concept image.
-    2. The concept should be easy for elementary school students to understand.
-    3. The design should look buildable using simple craft or recycled materials when relevant.
-    4. The image should clearly reflect the topic and all feature requirements.
-    5. Do not mention database, room_id, feature_id, or internal system details.
-            """.strip()
-
-            response = await self.client.responses.create(
-                model=settings.OPENAI_PROMPT_MODEL,
-                input=[
-                    {
-                        "role": "system",
-                        "content": system_prompt,
-                    },
-                    {
-                        "role": "user",
-                        "content": user_prompt,
-                    },
-                ],
-            )
-
-            prompt_text = response.output_text.strip()
-
-            if not prompt_text:
-                raise ValueError("OpenAI가 빈 feature 기반 이미지 프롬프트를 반환했습니다.")
-
-            logger.info(
-                "[openai_feature_prompt_generation_completed] prompt_length=%s",
-                len(prompt_text),
-            )
-            logger.info(
-                "[openai_feature_prompt_generated] prompt=%s",
-                prompt_text,
-            )
-
-            return prompt_text
+        return prompt_text
 
     async def generate_image_prompt(
         self,

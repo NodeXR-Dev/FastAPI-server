@@ -67,6 +67,7 @@ class ResponseCode(str, Enum):
     
     FEATURE400 = "FEATURE400"  # 잘못된 기능 요청
     FEATURE404 = "FEATURE404"  # 기능 없음
+    FEATURE500 = "FEATURE500"  # 기능 추출 또는 저장 오류
     
     # =========================
     # Guide
@@ -143,6 +144,7 @@ RESPONSE_MESSAGES = {
     ResponseCode.FEATURE203: "기능 목록 조회 성공", 
     ResponseCode.FEATURE400: "잘못된 기능 요청입니다.",
     ResponseCode.FEATURE404: "기능을 찾을 수 없습니다.",
+    ResponseCode.FEATURE500: "기능 생성 중 서버 오류가 발생했습니다.",
     
     ResponseCode.GUIDE400: "발화 가이드 요청값이 올바르지 않습니다.",
     ResponseCode.GUIDE500: "발화 가이드 생성 중 서버 오류가 발생했습니다.",
