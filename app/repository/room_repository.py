@@ -39,6 +39,20 @@ class RoomRepository:
         )
         return db.scalar(stmt)
 
+    def find_joined_member_by_user_id(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        user_id: UUID,
+    ) -> RoomMember | None:
+        stmt = select(RoomMember).where(
+            RoomMember.room_id == room_id,
+            RoomMember.user_id == user_id,
+            RoomMember.state == RoomMemberState.JOINED,
+        )
+        return db.scalar(stmt)
+
     def find_rooms(self, db: Session) -> list[Room]:
         stmt = (
             select(Room)

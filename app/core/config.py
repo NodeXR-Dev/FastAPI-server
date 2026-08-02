@@ -22,6 +22,8 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: str
     OPENAI_PROMPT_MODEL: str = "gpt-4.1-mini"
+    AGENT_LLM_MODEL: str | None = None
+    AGENT_LLM_TIMEOUT_SECONDS: float = 10.0
     GEMINI_API_KEY: str | None = None
     GEMINI_MODEL_NAME: str = "gemini-3.1-flash-image"
     MESHY_API_KEY: str | None = None
@@ -34,6 +36,14 @@ class Settings(BaseSettings):
     
     TOPIC_DRIFT_THRESHOLD: float = 0.55
     DISCUSSION_SIMILARITY_THRESHOLD: float = 0.78
+    TOPIC_SIMILARITY_THRESHOLD: float = 0.75
+    AGENT_RETRIEVAL_TOP_K: int = 5
+    MEMORY_GUARD_ALERT_THRESHOLD: float = 0.8
+
+    LANGSMITH_TRACING: bool = False
+    LANGSMITH_API_KEY: str | None = None
+    LANGSMITH_PROJECT: str = "NodeXR-realtime-agent"
+    LANGSMITH_ENDPOINT: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

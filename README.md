@@ -46,3 +46,43 @@ XR 회의에서는 아이디어, 결정사항, 제약조건, 논쟁점이 빠르
 | Server → Client | ERROR | 에러 이벤트 |
 
 ## 7. Swagger
+
+## 8. Realtime Agent Hot Path
+
+Unity sends an `UTTERANCE_CREATE` event to `/ws/rooms/event`. The server normalizes
+and embeds the utterance, persists it, routes it to an ACTIVE topic with pgvector
+cosine similarity, updates the topic centroid, and then invokes the short-lived
+`RealtimeAgentGraph`.
+
+The graph uses LangChain structured output for multi-trigger classification and
+Memory Guard judgement. Rationale and conflict recall are grounded in Top-K
+`semantic_memories` / `design_facts` retrieval plus SQLAlchemy relationship and
+source-utterance traversal. Independent trigger branches run in parallel. 2D/3D
+generation is only enqueued through the existing generation services; the graph
+does not wait for the external generation job to finish.
+
+Realtime tuning variables:
+
+```dotenv
+TOPIC_SIMILARITY_THRESHOLD=0.75
+AGENT_RETRIEVAL_TOP_K=5
+MEMORY_GUARD_ALERT_THRESHOLD=0.8
+AGENT_LLM_MODEL=gpt-4.1-mini
+AGENT_LLM_TIMEOUT_SECONDS=10
+```
+
+LangSmith tracing is optional. When it is disabled or the variables are absent,
+the realtime flow continues without exporting traces.
+
+```dotenv
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=
+LANGSMITH_PROJECT=NodeXR-realtime-agent
+# Optional for self-hosted LangSmith
+LANGSMITH_ENDPOINT=
+```
+
+The trace tree includes `RealtimeUtteranceHotPath`, `embedding`,
+`topic_routing`, `RealtimeAgentGraph`, `classify_triggers`, the selected nested
+subgraphs and their retrieval/LLM nodes, and `persist_and_notify`. Trace metadata
+contains IDs and graph names, not a duplicate of the full utterance text.

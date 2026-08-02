@@ -112,6 +112,12 @@ async def room_event_websocket(
                         user_id=current_user_id,
                     )
 
+                await broadcast_server_events(
+                    room_id=event.room_id,
+                    user_id=current_user_id,
+                    server_events=server_events,
+                )
+
                 if event.event_type in ACK_REQUIRED_EVENTS and ack_payload is not None:
                     await send_ws_success_to_requester(
                         websocket=websocket,
@@ -293,3 +299,25 @@ async def handle_utterance_create(
     )
 
     return ws_events or []
+
+
+async def broadcast_server_events(
+    *,
+    room_id: UUID,
+    user_id: UUID | None,
+    server_events: list[Any],
+) -> None:
+    for server_event in server_events:
+        try:
+            await room_ws_manager.broadcast_to_room(
+                room_id=room_id,
+                message=server_event,
+            )
+        except Exception as broadcast_error:
+            logger.exception(
+                "[ws_server_event_broadcast_failed] room_id=%s | user_id=%s | event_type=%s | error=%s",
+                room_id,
+                user_id,
+                server_event.get("event_type"),
+                str(broadcast_error),
+            )
