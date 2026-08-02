@@ -36,7 +36,10 @@ from app.model.enum import (
 )
 from app.repository.graph_repository import GraphRepository
 from app.repository.utterance_repository import UtteranceRepository
-from app.service.agent.reflection_batch_service import ReflectionBatchService
+from app.service.agent.reflection_batch_service import (
+    InvalidFactRelationshipError,
+    ReflectionBatchService,
+)
 from app.service.agent.reflection_scheduler import ReflectionScheduler
 
 
@@ -53,6 +56,115 @@ def _context(*, utterances=None) -> BatchContext:
         room_id=uuid4(),
         utterances=utterances or [],
     )
+
+
+def _reflection_service() -> ReflectionBatchService:
+    return ReflectionBatchService(
+        session_factory=Mock(),
+        utterance_repository=Mock(),
+        graph_repository=Mock(),
+        topic_repository=Mock(),
+        memory_repository=Mock(),
+        embedding_service=Mock(),
+    )
+
+
+def _invalid_relationship_case():
+    topic_id = uuid4()
+    proposal_source = uuid4()
+    rationale_source = uuid4()
+    context = _context(
+        utterances=[
+            BatchUtteranceRecord(
+                utterance_id=proposal_source,
+                user_id=uuid4(),
+                topic_id=topic_id,
+                normalized_text="접이식 손잡이를 제안합니다.",
+            ),
+            BatchUtteranceRecord(
+                utterance_id=rationale_source,
+                user_id=uuid4(),
+                topic_id=topic_id,
+                normalized_text="보관 공간을 줄일 수 있기 때문입니다.",
+            ),
+        ]
+    )
+    facts = [
+        FactCandidate(
+            temp_id="proposal-1",
+            topic_id=topic_id,
+            fact_type=DesignFactType.PROPOSAL,
+            content="접이식 손잡이를 적용한다.",
+            source_utterance_ids=[proposal_source],
+            confidence=0.95,
+        ),
+        FactCandidate(
+            temp_id="rationale-1",
+            topic_id=topic_id,
+            fact_type=DesignFactType.RATIONALE,
+            content="보관 공간을 줄일 수 있다.",
+            source_utterance_ids=[rationale_source],
+            confidence=0.92,
+        ),
+    ]
+    invalid_analysis = BatchAnalysisResult(
+        facts=facts,
+        links=[
+            FactLinkCandidate(
+                source=FactReference(
+                    reference_type="CANDIDATE",
+                    reference_id="proposal-1",
+                ),
+                target=FactReference(
+                    reference_type="CANDIDATE",
+                    reference_id="rationale-1",
+                ),
+                link_type=DesignFactLinkType.SUPPORTS,
+                confidence=0.9,
+            )
+        ],
+    )
+    repaired_analysis = BatchAnalysisResult(
+        facts=facts,
+        links=[
+            FactLinkCandidate(
+                source=FactReference(
+                    reference_type="CANDIDATE",
+                    reference_id="rationale-1",
+                ),
+                target=FactReference(
+                    reference_type="CANDIDATE",
+                    reference_id="proposal-1",
+                ),
+                link_type=DesignFactLinkType.RATIONALE_OF,
+                confidence=0.9,
+            )
+        ],
+    )
+    return context, facts, invalid_analysis, repaired_analysis
+
+
+def _validate_with_graph(*, context, analysis, repair_result):
+    node = Mock()
+    node.repair_analysis_relationships = AsyncMock(
+        side_effect=repair_result
+        if isinstance(repair_result, Exception)
+        else None,
+        return_value=None
+        if isinstance(repair_result, Exception)
+        else repair_result,
+    )
+    graph = ReflectionBatchGraph(service=_reflection_service(), node=node)
+    result = asyncio.run(
+        graph.validate_analysis(
+            {
+                "room_id": context.room_id,
+                "batch_context": context,
+                "analysis_result": analysis,
+            }
+        )
+    )["analysis_result"]
+    return result, node
 
 
 def test_unprocessed_utterance_query_is_state_based_not_five_minute_based():
@@ -283,6 +395,62 @@ def test_validation_rejects_fact_without_batch_provenance():
 
     with pytest.raises(ValueError, match="outside the batch"):
         service.validate_analysis(context=context, analysis=analysis)
+
+
+def test_invalid_fact_relationship_triggers_one_repair_and_accepts_correction():
+    context, facts, invalid_analysis, repaired_analysis = (
+        _invalid_relationship_case()
+    )
+    result, node = _validate_with_graph(
+        context=context,
+        analysis=invalid_analysis,
+        repair_result=repaired_analysis,
+    )
+
+    node.repair_analysis_relationships.assert_awaited_once()
+    assert result.facts == facts
+    assert len(result.links) == 1
+    assert result.links[0].link_type == DesignFactLinkType.RATIONALE_OF
+    assert result.links[0].source.reference_id == "rationale-1"
+
+
+def test_invalid_relationship_is_discarded_when_single_repair_is_still_invalid():
+    context, facts, invalid_analysis, _ = _invalid_relationship_case()
+    result, node = _validate_with_graph(
+        context=context,
+        analysis=invalid_analysis,
+        repair_result=invalid_analysis,
+    )
+
+    node.repair_analysis_relationships.assert_awaited_once()
+    assert result.facts == facts
+    assert result.links == []
+
+
+def test_invalid_relationship_is_discarded_when_repair_call_fails():
+    context, facts, invalid_analysis, _ = _invalid_relationship_case()
+    result, node = _validate_with_graph(
+        context=context,
+        analysis=invalid_analysis,
+        repair_result=RuntimeError("repair timeout"),
+    )
+
+    node.repair_analysis_relationships.assert_awaited_once()
+    assert result.facts == facts
+    assert result.links == []
+
+
+def test_invalid_relationship_uses_specific_validation_error():
+    context, _, invalid_analysis, _ = _invalid_relationship_case()
+
+    with pytest.raises(
+        InvalidFactRelationshipError,
+        match="PROPOSAL -SUPPORTS-> RATIONALE",
+    ):
+        _reflection_service().validate_analysis(
+            context=context,
+            analysis=invalid_analysis,
+        )
 
 
 def test_vector_exact_match_prevents_duplicate_constraint():

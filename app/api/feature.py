@@ -1,13 +1,13 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.orm import Session
 
 from app.core.response.response import success_response
 from app.db.session import get_db
 from app.core.response.code import ResponseCode
 from app.schema.feature.request import (
-    CreateFeatureRequest,
+    GenerateFeaturesRequest,
     ModifyFeatureRequest,
     DeleteFeatureRequest,
 )
@@ -16,6 +16,9 @@ from app.schema.feature.response import (
     FeatureListResponse,
 )
 from app.service.feature.feature_service import FeatureService
+from app.service.generation.image_2d_generation_task_service import (
+    Image2DGenerationTaskService,
+)
 
 router = APIRouter(
     prefix="/features",
@@ -23,6 +26,7 @@ router = APIRouter(
 )
 
 feature_service = FeatureService()
+image_2d_generation_task_service = Image2DGenerationTaskService()
 
 
 # =========================
@@ -30,18 +34,26 @@ feature_service = FeatureService()
 # POST /api/features/generate
 # =========================
 @router.post("/generate")
-def create_feature(
-    request: CreateFeatureRequest,
+async def generate_features(
+    request: GenerateFeaturesRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    result: FeatureResponse = feature_service.create_feature(
+    result: FeatureListResponse = await feature_service.generate_features(
         request=request,
         db=db,
     )
 
+    background_tasks.add_task(
+        image_2d_generation_task_service.generate_from_features,
+        room_id=request.room_id,
+        user_id=None,
+    )
+
     return success_response(
         code=ResponseCode.FEATURE200,
-        result=result,
+        message="기능 목록 생성 및 초기 2D 스케치 요청이 접수되었습니다.",
+        result=result.model_dump(mode="json"),
     )
 
 

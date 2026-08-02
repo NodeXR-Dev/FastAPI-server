@@ -6,6 +6,7 @@ from app.agent.llm.provider import get_agent_llm
 from app.agent.prompt.reflection_batch_prompt import (
     FACT_DEDUP_PROMPT,
     REFLECTION_BATCH_ANALYZER_PROMPT,
+    REFLECTION_BATCH_RELATIONSHIP_REPAIR_PROMPT,
     SEMANTIC_MEMORY_PROMPT,
     TOPIC_SUMMARY_PROMPT,
 )
@@ -27,6 +28,10 @@ class ReflectionBatchNode:
             REFLECTION_BATCH_ANALYZER_PROMPT
             | model.with_structured_output(BatchAnalysisResult)
         ).with_config(run_name="LLM Batch Analyzer")
+        self.analysis_repair_chain = (
+            REFLECTION_BATCH_RELATIONSHIP_REPAIR_PROMPT
+            | model.with_structured_output(BatchAnalysisResult)
+        ).with_config(run_name="LLM Batch Relationship Repair")
         self.dedup_chain = (
             FACT_DEDUP_PROMPT
             | model.with_structured_output(FactDedupJudgeResult)
@@ -45,6 +50,26 @@ class ReflectionBatchNode:
             return BatchAnalysisResult()
         result = await self.analysis_chain.ainvoke(
             {"batch_context_json": context.model_dump_json()},
+        )
+        return (
+            result
+            if isinstance(result, BatchAnalysisResult)
+            else BatchAnalysisResult.model_validate(result)
+        )
+
+    async def repair_analysis_relationships(
+        self,
+        *,
+        context: BatchContext,
+        analysis: BatchAnalysisResult,
+        validation_error: str,
+    ) -> BatchAnalysisResult:
+        result = await self.analysis_repair_chain.ainvoke(
+            {
+                "batch_context_json": context.model_dump_json(),
+                "analysis_json": analysis.model_dump_json(),
+                "validation_error": validation_error,
+            },
         )
         return (
             result

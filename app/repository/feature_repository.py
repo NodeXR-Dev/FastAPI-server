@@ -4,9 +4,9 @@ from sqlalchemy.orm import Session
 
 from app.core.logger import get_logger
 from app.model.feature import Feature
-from app.model.room import Room
 
 logger = get_logger(__name__)
+
 
 class FeatureRepository:
     def save_feature(
@@ -17,6 +17,15 @@ class FeatureRepository:
         db.add(feature)
         db.flush()
         return feature
+
+    def save_features(
+        self,
+        db: Session,
+        features: list[Feature],
+    ) -> list[Feature]:
+        db.add_all(features)
+        db.flush()
+        return features
 
     def find_features(
         self,

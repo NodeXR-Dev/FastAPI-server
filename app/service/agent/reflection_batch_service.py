@@ -30,6 +30,7 @@ from app.agent.schema.reflection_batch_schema import (
     TopicSummaryProposal,
 )
 from app.core.config import settings
+from app.core.logger import get_logger
 from app.db.session import SessionLocal
 from app.model.enum import (
     DesignFactLinkType,
@@ -43,6 +44,12 @@ from app.repository.topic_repository import TopicRepository
 from app.repository.utterance_repository import UtteranceRepository
 from app.service.utterance.embedding_service import EmbeddingService
 from app.service.utterance.topic_routing_service import TopicRoutingService
+
+logger = get_logger(__name__)
+
+
+class InvalidFactRelationshipError(ValueError):
+    pass
 
 
 class ReflectionBatchService:
@@ -342,6 +349,7 @@ class ReflectionBatchService:
         *,
         context: BatchContext,
         analysis: BatchAnalysisResult,
+        discard_invalid_relationships: bool = False,
     ) -> BatchAnalysisResult:
         utterance_topic = {
             item.utterance_id: item.topic_id for item in context.utterances
@@ -411,10 +419,25 @@ class ReflectionBatchService:
             )
             allowed_source, allowed_target = self._ALLOWED_LINK_TYPES[link.link_type]
             if source_type not in allowed_source or target_type not in allowed_target:
-                raise ValueError(
+                message = (
                     f"invalid fact relationship {source_type.value} "
                     f"-{link.link_type.value}-> {target_type.value}"
                 )
+                if discard_invalid_relationships:
+                    logger.warning(
+                        "[reflection_invalid_relationship_discarded] "
+                        "source_type=%s | link_type=%s | target_type=%s | "
+                        "source_reference=%s:%s | target_reference=%s:%s",
+                        source_type.value,
+                        link.link_type.value,
+                        target_type.value,
+                        link.source.reference_type,
+                        link.source.reference_id,
+                        link.target.reference_type,
+                        link.target.reference_id,
+                    )
+                    continue
+                raise InvalidFactRelationshipError(message)
             accepted_links.append(link)
 
         return BatchAnalysisResult(facts=accepted_facts, links=accepted_links)

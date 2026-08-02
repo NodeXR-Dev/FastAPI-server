@@ -6,7 +6,7 @@ from app.model.feature import Feature
 from app.repository.feature_repository import FeatureRepository
 from app.repository.room_repository import RoomRepository
 from app.schema.feature.request import (
-    CreateFeatureRequest,
+    GenerateFeaturesRequest,
     ModifyFeatureRequest,
     DeleteFeatureRequest,
 )
@@ -19,64 +19,109 @@ from app.core.response.code import ResponseCode
 from app.core.response.exceptions import (
     BadRequestException,
     NotFoundException,
+    ServerException,
 )
 from app.core.logger import get_logger
+from app.service.feature.feature_extraction_service import FeatureExtractionService
 
 logger = get_logger(__name__)
 
 
 class FeatureService:
-    def __init__(self):
-        self.feature_repository = FeatureRepository()
-        self.room_repository = RoomRepository()
+    def __init__(
+        self,
+        *,
+        feature_repository: FeatureRepository | None = None,
+        room_repository: RoomRepository | None = None,
+        feature_extraction_service: FeatureExtractionService | None = None,
+    ) -> None:
+        self.feature_repository = feature_repository or FeatureRepository()
+        self.room_repository = room_repository or RoomRepository()
+        self.feature_extraction_service = (
+            feature_extraction_service or FeatureExtractionService()
+        )
 
     # =========================
     # 기능 생성
     # POST /api/features/generate
     # =========================
-    def create_feature(
+    async def generate_features(
         self,
-        request: CreateFeatureRequest,
+        request: GenerateFeaturesRequest,
         db: Session,
-    ) -> FeatureResponse:
+    ) -> FeatureListResponse:
         logger.info(
-            "[service_create_feature] start | room_id=%s | feature_length=%s",
+            "[service_generate_features] start | room_id=%s | feature_length=%s",
             request.room_id,
             len(request.feature_text),
         )
 
-        if not request.room_id or not request.feature_text:
-            logger.warning("[service_create_feature] invalid request")
+        if not request.room_id or not any(
+            character.isalnum() for character in request.feature_text
+        ):
+            logger.warning("[service_generate_features] invalid request")
             raise BadRequestException(code=ResponseCode.FEATURE400)
 
-        if not self.room_repository.find_room_by_id(db, request.room_id):
+        room = self.room_repository.find_room_by_id(db, request.room_id)
+        if room is None:
             logger.warning(
-                "[service_create_feature] room not found | room_id=%s",
+                "[service_generate_features] room not found | room_id=%s",
                 request.room_id,
             )
             raise NotFoundException(code=ResponseCode.ROOM404)
 
-        feature = Feature(
-            room_id=request.room_id,
+        if not room.is_active:
+            raise BadRequestException(
+                code=ResponseCode.FEATURE400,
+                message="비활성화된 회의실에서는 기능을 생성할 수 없습니다.",
+            )
+
+        extracted_feature_texts = await self.feature_extraction_service.extract(
             feature_text=request.feature_text,
         )
+        features = [
+            Feature(
+                room_id=request.room_id,
+                feature_text=feature_text,
+            )
+            for feature_text in extracted_feature_texts
+        ]
 
-        feature = self.feature_repository.save_feature(db, feature)
-
-        db.commit()
-        db.refresh(feature)
+        try:
+            saved_features = self.feature_repository.save_features(
+                db=db,
+                features=features,
+            )
+            response = FeatureListResponse(
+                room_id=request.room_id,
+                features=[
+                    FeatureInfo(
+                        feature_id=feature.feature_id,
+                        feature_text=feature.feature_text,
+                    )
+                    for feature in saved_features
+                ],
+            )
+            db.commit()
+        except Exception as error:
+            db.rollback()
+            logger.exception(
+                "[service_generate_features] persistence failed | room_id=%s | feature_count=%s | error=%s",
+                request.room_id,
+                len(features),
+                str(error),
+            )
+            raise ServerException(
+                code=ResponseCode.FEATURE500,
+                message="추출된 기능을 저장하지 못했습니다.",
+            ) from error
 
         logger.info(
-            "[service_create_feature] success | room_id=%s | feature_id=%s",
-            feature.room_id,
-            feature.feature_id,
+            "[service_generate_features] success | room_id=%s | feature_count=%s",
+            request.room_id,
+            len(response.features),
         )
-
-        return FeatureResponse(
-            room_id=feature.room_id,
-            feature_id=feature.feature_id,
-            feature_text=feature.feature_text,
-        )
+        return response
 
     # =========================
     # 기능 목록 조회
