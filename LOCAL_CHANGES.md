@@ -1,9 +1,49 @@
 # 로컬 서버 변경 기록 (개발자3)
 
 NodeXR 서버(`FastAPI-server`)를 로컬에서 돌리며 **직접 바꾼 것**과 **왜 바꿨는지**를 모아둔다.
-서버 애플리케이션 코드는 아직 한 줄도 수정하지 않았다. 아래는 전부 로컬 환경·DB·설정 변경이다.
+1절은 서버 애플리케이션 코드 수정이고, 2절부터는 로컬 환경·DB·설정 변경이다.
 
-최종 갱신: 2026-08-05
+최종 갱신: 2026-08-06
+
+---
+
+## 0. 코드 수정 — 2D 생성 프롬프트에 "제품 하나만" 제약 추가 (2026-08-06)
+
+### 무엇을
+
+`app/service/generation/openai_prompt_client.py` 의 `generate_image_prompt()` 시스템 프롬프트
+Rules 에 4줄을 추가했다. 기존 줄은 건드리지 않았다.
+
+```
+- Depict exactly ONE isolated product. Never a scene, workspace, studio, or collage.
+- No people, hands, furniture, rooms, or background props unless the product itself is one.
+- Plain neutral background (solid light gray or white). No floor, no shadows of other objects.
+- Single three-quarter view of the whole product, centered, fully visible, nothing cropped.
+```
+
+### 왜
+
+생성된 2D 이미지가 **제품 하나가 아니라 장면 전체**로 나왔다. "신발 밑창" 을 요청했는데
+디자인 스튜디오에서 사람 넷이 회의하는 그림이 나오고, 그 안에 제품이 소품처럼 들어 있었다.
+
+기존 Rules 에는 `clean, coherent, high-quality 2D concept rendering` 만 있어 배경·인물·장면을
+금지하는 제약이 전혀 없었다. LLM 이 문맥에 살을 붙이는 것을 막을 근거가 없었다.
+
+**3D 에서 특히 치명적이다.** Meshy 는 이미지에 보이는 모든 것을 메시로 만든다. 장면 이미지를
+넣으면 책상·의자·사람·모니터가 통째로 3D 로 변환되고, 클라가 최장변을 기준으로 크기를
+정규화하므로 정작 제품은 몇 cm 로 쪼그라든다(실측: 최장변 0.45m 로 맞추니 신발이 보이지 않음).
+
+배경을 단색으로 강제하는 항목이 3D 품질에 가장 크게 기여한다.
+
+### 검증
+
+적용 후 2D 를 새로 생성해 제품 하나만 나오는지 확인할 것. 그 뒤에 3D 를 돌린다
+(3D 는 호출 1회당 Meshy 과금이므로 2D 가 만족스러울 때만).
+
+### 남은 것
+
+`app/ai/prompts/feature_image_prompt.py`(feature 경로)에는 같은 제약을 아직 넣지 않았다.
+현재 클라는 `2d/generate/graph` 만 쓰기 때문이다. 5-3 절의 프롬프트 이원화 문제와 함께 정리 필요.
 
 ---
 

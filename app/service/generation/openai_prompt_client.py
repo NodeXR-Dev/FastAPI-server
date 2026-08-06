@@ -82,6 +82,10 @@ Rules:
 - Reflect the graph node chains.
 - Emphasized part nodes are important visual components.
 - The final prompt should describe a clean, coherent, high-quality 2D concept rendering.
+- Depict exactly ONE isolated product. Never a scene, workspace, studio, or collage.
+- No people, hands, furniture, rooms, or background props unless the product itself is one.
+- Plain neutral background (solid light gray or white). No floor, no shadows of other objects.
+- Single three-quarter view of the whole product, centered, fully visible, nothing cropped.
         """.strip()
 
         user_prompt = f"""
