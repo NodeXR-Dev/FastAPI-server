@@ -6,7 +6,8 @@ from uuid import UUID
 class CreateRoomResponse(BaseModel):
     room_id: UUID
     room_topic: str
-    password: str
+    # 공개 방이면 None 이다.
+    password: str | None = None
     leader: str
     created_at: datetime
 
