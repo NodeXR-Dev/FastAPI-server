@@ -127,3 +127,109 @@ class GraphBuildService:
                 message="그래프 생성 중 서버 오류가 발생했습니다.",
             )
 
+    def node_positioning(
+        self,
+        graph: GraphResponse,
+        parent_position: list[float] | None = None,
+    ) -> GraphResponse:
+        """
+        Unity에서 보기 좋도록 node 위치를 배치한다.
+
+        배치 규칙:
+        1. parent_position이 없으면 root graph로 판단
+           - 첫 노드는 (0, 0, 0)
+           - 여러 노드는 x축으로 나열
+
+        2. parent_position이 있으면 child graph로 판단
+           - parent 아래쪽(y 감소)에 배치
+           - 여러 자식 노드는 parent를 중심으로 x축 분산
+        """
+
+        stage = "node_positioning"
+        start_time = time.perf_counter()
+
+        logger.info(
+            "[node_positioning] start | node_count=%s | parent_position=%s",
+            len(graph.nodes) if graph is not None else None,
+            parent_position,
+        )
+
+        try:
+            if graph is None or not graph.nodes:
+                raise BadRequestException(
+                    code=ResponseCode.BTUTT400,
+                    message="위치를 배치할 노드가 없습니다.",
+                )
+
+            x_spacing = 1.5
+            y_spacing = 1.5
+
+            node_count = len(graph.nodes)
+            center_index = (node_count - 1) / 2
+
+            # parent_position이 없으면 root graph로 배치
+            if parent_position is None:
+                for idx, node in enumerate(graph.nodes):
+                    node.position = [
+                        (idx - center_index) * x_spacing,
+                        0.0,
+                        0.0,
+                    ]
+
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                avg_ms = performance_tracker.record(stage, elapsed_ms)
+
+                logger.info(
+                    "[node_positioning] done_root | elapsed_ms=%.2f | avg_ms=%.2f",
+                    elapsed_ms,
+                    avg_ms,
+                )
+
+                return graph
+
+            # parent_position 형식 검증
+            if len(parent_position) < 3:
+                raise BadRequestException(
+                    code=ResponseCode.BTUTT400,
+                    message="parent_position은 [x, y, z] 형태여야 합니다.",
+                )
+
+            parent_x = float(parent_position[0])
+            parent_y = float(parent_position[1])
+            parent_z = float(parent_position[2])
+
+            # parent 아래쪽에 child nodes 배치
+            for idx, node in enumerate(graph.nodes):
+                node.position = [
+                    parent_x + ((idx - center_index) * x_spacing),
+                    parent_y - y_spacing,
+                    parent_z,
+                ]
+
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            avg_ms = performance_tracker.record(stage, elapsed_ms)
+
+            logger.info(
+                "[node_positioning] done_child | elapsed_ms=%.2f | avg_ms=%.2f",
+                elapsed_ms,
+                avg_ms,
+            )
+
+            return graph
+
+        except BadRequestException:
+            raise
+
+        except Exception as e:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+            logger.exception(
+                "[node_positioning] failed | elapsed_ms=%.2f | error=%s",
+                elapsed_ms,
+                str(e),
+            )
+
+            raise ServerException(
+                code=ResponseCode.BTUTT500,
+                message="노드 위치 배치 중 서버 오류가 발생했습니다.",
+            )

@@ -54,7 +54,7 @@ def create_node_from_utterance(
         elapsed_ms,
         avg_ms,
         result.room_id,
-        result.graph.graph_version,
+        result.graph_version,
     )
 
     return success_response(
