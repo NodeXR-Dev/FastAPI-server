@@ -106,7 +106,6 @@ class RoomService:
 
         if (
             not request.room_topic
-            or not request.password
             or not request.nickname
         ):
             logger.warning("[create_room] invalid request")
@@ -114,9 +113,15 @@ class RoomService:
                 code=ResponseCode.ROOM400,
             )
 
+        # 비밀번호를 안 보냈으면 해시를 NULL 로 두어 공개 방으로 만든다.
+        # (room_password_hash 는 이미 nullable 이라 마이그레이션이 필요 없다)
+        password = request.password or None
+
         room = Room(
             topic=request.room_topic,
-            room_password_hash=hash_password(request.password),
+            room_password_hash=(
+                hash_password(password) if password else None
+            ),
             is_active=True,
         )
         room = self.room_repository.save_room(
@@ -158,7 +163,7 @@ class RoomService:
         return CreateRoomResponse(
             room_id=room.room_id,
             room_topic=room.topic,
-            password=request.password,
+            password=password,
             leader=leader.nickname,
             created_at=room.created_at,
         )
@@ -277,19 +282,23 @@ class RoomService:
             room_id=request.room_id,
         )
 
-        if not verify_password(
-            request.password,
-            room.room_password_hash,
-        ):
-            logger.warning(
-                "[enter_room] password mismatch "
-                "| room_id=%s | nickname=%s",
-                request.room_id,
-                request.nickname,
-            )
-            raise UnauthorizedException(
-                code=ResponseCode.ROOM401,
-            )
+        # 해시가 없으면 공개 방이다. verify_password 는 해시가 None 이면
+        # 항상 False 를 돌려주므로, 여기서 걸러주지 않으면 비밀번호 없이 만든 방에
+        # 아무도 들어올 수 없다.
+        if room.room_password_hash is not None:
+            if not verify_password(
+                request.password or "",
+                room.room_password_hash,
+            ):
+                logger.warning(
+                    "[enter_room] password mismatch "
+                    "| room_id=%s | nickname=%s",
+                    request.room_id,
+                    request.nickname,
+                )
+                raise UnauthorizedException(
+                    code=ResponseCode.ROOM401,
+                )
 
         existing_member = (
             self.room_repository.find_member_by_room_and_nickname(
