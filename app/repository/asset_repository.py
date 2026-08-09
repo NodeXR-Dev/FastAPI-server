@@ -1,5 +1,7 @@
+from datetime import datetime
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.logger import get_logger
@@ -21,6 +23,51 @@ class AssetRepository:
             .filter(Asset.asset_id == asset_id)
             .first()
         )
+
+    def find_latest_ws_sent_2d_asset(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        requested_at: datetime,
+    ) -> Asset | None:
+        stmt = (
+            select(Asset)
+            .where(
+                Asset.room_id == room_id,
+                Asset.asset_type == AssetType.IMAGE_2D,
+                Asset.ws_sent_at.is_not(None),
+                Asset.ws_sent_at <= requested_at,
+            )
+            .order_by(
+                Asset.ws_sent_at.desc(),
+                Asset.created_at.desc(),
+                Asset.asset_id.desc(),
+            )
+            .limit(1)
+        )
+        return db.scalar(stmt)
+
+    def mark_2d_asset_ws_sent(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        asset_id: UUID,
+        ws_sent_at: datetime,
+    ) -> Asset | None:
+        stmt = select(Asset).where(
+            Asset.room_id == room_id,
+            Asset.asset_id == asset_id,
+            Asset.asset_type == AssetType.IMAGE_2D,
+        )
+        asset = db.scalar(stmt)
+        if asset is None:
+            return None
+
+        asset.ws_sent_at = ws_sent_at
+        db.flush()
+        return asset
 
     def create_2d_asset(
         self,

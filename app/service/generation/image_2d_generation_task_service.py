@@ -1,4 +1,5 @@
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -8,6 +9,7 @@ from app.core.response.code import ResponseCode
 from app.core.response.exceptions import BaseCustomException
 from app.core.response.ws_response import ws_error_event
 from app.db.session import SessionLocal
+from app.repository.asset_repository import AssetRepository
 from app.schema.generation.generation_result import Generated2DAssetResult
 from app.schema.generation.color_change_request import ColorChangeMetadataRequest
 from app.schema.generation.request import Connection2D
@@ -42,10 +44,12 @@ class Image2DGenerationTaskService:
         session_factory: Callable[[], Session] = SessionLocal,
         ws_manager: RoomConnectionManager = room_ws_manager,
         color_change_service: Image2DColorChangeService | None = None,
+        asset_repository: AssetRepository | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.ws_manager = ws_manager
         self.color_change_service = color_change_service
+        self.asset_repository = asset_repository or AssetRepository()
 
     async def generate_color_change(
         self,
@@ -109,7 +113,7 @@ class Image2DGenerationTaskService:
         )
 
         try:
-            await self.ws_manager.send_to_user(
+            sent = await self.ws_manager.send_to_user(
                 room_id=room_id,
                 user_id=user_id,
                 message=event.model_dump(mode="json"),
@@ -122,6 +126,17 @@ class Image2DGenerationTaskService:
                 str(error),
             )
             return
+
+        if sent:
+            delivery_db = self.session_factory()
+            try:
+                self._record_asset_ws_delivery(
+                    db=delivery_db,
+                    room_id=room_id,
+                    asset_id=result.asset_id,
+                )
+            finally:
+                delivery_db.close()
 
         logger.info(
             "[2d_color_change_task_completed] room_id=%s | asset_id=%s",
@@ -231,11 +246,17 @@ class Image2DGenerationTaskService:
                         result.asset_id,
                     )
                 else:
-                    await self.ws_manager.send_to_user(
+                    sent = await self.ws_manager.send_to_user(
                         room_id=room_id,
                         user_id=user_id,
                         message=event.model_dump(mode="json"),
                     )
+                    if sent:
+                        self._record_asset_ws_delivery(
+                            db=db,
+                            room_id=room_id,
+                            asset_id=result.asset_id,
+                        )
             except Exception as error:
                 logger.exception(
                     "[2d_generation_ws_failed_after_commit] room_id=%s | user_id=%s | job_id=%s | asset_id=%s | error=%s",
@@ -259,6 +280,38 @@ class Image2DGenerationTaskService:
                 "[2d_generation_task_db_closed] room_id=%s | graph_snapshot_id=%s",
                 room_id,
                 graph_snapshot_id,
+            )
+
+    def _record_asset_ws_delivery(
+        self,
+        *,
+        db: Session,
+        room_id: UUID,
+        asset_id: UUID,
+    ) -> None:
+        try:
+            asset = self.asset_repository.mark_2d_asset_ws_sent(
+                db=db,
+                room_id=room_id,
+                asset_id=asset_id,
+                ws_sent_at=datetime.now(timezone.utc),
+            )
+            if asset is None:
+                db.rollback()
+                logger.error(
+                    "[2d_generation_ws_delivery_asset_missing] room_id=%s | asset_id=%s",
+                    room_id,
+                    asset_id,
+                )
+                return
+            db.commit()
+        except Exception as error:
+            db.rollback()
+            logger.exception(
+                "[2d_generation_ws_delivery_record_failed] room_id=%s | asset_id=%s | error=%s",
+                room_id,
+                asset_id,
+                str(error),
             )
 
     async def _send_error_to_user(

@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NodeXR WebSocket 2D Test</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+      background: #0b1020;
+      color: #e8eefc;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 28px; }
+    main { max-width: 1100px; margin: 0 auto; }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    p { color: #aebbd3; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .card { background: #121a2f; border: 1px solid #273554; border-radius: 14px; padding: 18px; }
+    label { display: block; margin: 12px 0 6px; color: #b9c7e3; font-size: 13px; }
+    input, textarea, button {
+      width: 100%; border-radius: 8px; border: 1px solid #344568;
+      background: #0d1528; color: #eef4ff; padding: 10px 12px;
+    }
+    textarea { min-height: 260px; resize: vertical; font-family: ui-monospace, monospace; }
+    button { cursor: pointer; border: 0; background: #376df6; font-weight: 700; margin-top: 10px; }
+    button.secondary { background: #263655; }
+    button.danger { background: #8b3545; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    .buttons { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .status { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 999px; background: #27324a; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #8995aa; }
+    .status.connected .dot { background: #39d98a; box-shadow: 0 0 10px #39d98a; }
+    .status.error .dot { background: #ff6577; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #090f1d; padding: 14px; border-radius: 8px; min-height: 180px; max-height: 380px; overflow: auto; }
+    #preview { width: 100%; max-height: 520px; object-fit: contain; border-radius: 10px; background: #090f1d; display: none; }
+    #imageLink { color: #83a8ff; word-break: break-all; }
+    .wide { grid-column: 1 / -1; }
+    @media (max-width: 780px) { .grid { grid-template-columns: 1fr; } .wide { grid-column: auto; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>NodeXR WebSocket · 2D 이미지 테스트</h1>
+  <p>1) WebSocket 연결 → 2) 2D 생성 요청 → 3) <code>2D_GENERATED</code> 수신 및 이미지 표시 순서로 확인합니다.</p>
+
+  <div class="grid">
+    <section class="card">
+      <h2>연결 설정</h2>
+      <div id="status" class="status"><span class="dot"></span><span id="statusText">연결 안 됨</span></div>
+      <label for="roomId">room_id</label>
+      <input id="roomId" value="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">
+      <label for="userId">user_id</label>
+      <input id="userId" value="11111111-1111-1111-1111-111111111111">
+      <label for="wsUrl">WebSocket URL</label>
+      <input id="wsUrl">
+      <div class="buttons">
+        <button id="connectButton">WebSocket 연결</button>
+        <button id="disconnectButton" class="danger" disabled>연결 종료</button>
+      </div>
+      <button id="reportButton" class="secondary">현재 보고서 조회</button>
+    </section>
+
+    <section class="card">
+      <h2>2D 생성 요청</h2>
+      <label for="requestJson">POST /api/2d/generate/graph</label>
+      <textarea id="requestJson" spellcheck="false"></textarea>
+      <button id="generateButton" disabled>2D 이미지 생성 요청</button>
+      <p id="requestResult">WebSocket 연결 후 요청할 수 있습니다.</p>
+    </section>
+
+    <section class="card">
+      <h2>수신 이미지</h2>
+      <p id="imageState">아직 2D 이미지 이벤트를 받지 않았습니다.</p>
+      <a id="imageLink" href="#" target="_blank" rel="noopener"></a>
+      <img id="preview" alt="WebSocket으로 수신한 2D 생성 이미지">
+    </section>
+
+    <section class="card">
+      <h2>이벤트 로그</h2>
+      <button id="clearButton" class="secondary">로그 지우기</button>
+      <pre id="eventLog"></pre>
+    </section>
+
+    <section class="card wide">
+      <h2>보고서 응답</h2>
+      <pre id="reportLog">아직 조회하지 않았습니다.</pre>
+    </section>
+  </div>
+</main>
+
+<script>
+  const elements = {
+    roomId: document.querySelector("#roomId"),
+    userId: document.querySelector("#userId"),
+    wsUrl: document.querySelector("#wsUrl"),
+    requestJson: document.querySelector("#requestJson"),
+    connectButton: document.querySelector("#connectButton"),
+    disconnectButton: document.querySelector("#disconnectButton"),
+    generateButton: document.querySelector("#generateButton"),
+    reportButton: document.querySelector("#reportButton"),
+    clearButton: document.querySelector("#clearButton"),
+    requestResult: document.querySelector("#requestResult"),
+    status: document.querySelector("#status"),
+    statusText: document.querySelector("#statusText"),
+    eventLog: document.querySelector("#eventLog"),
+    reportLog: document.querySelector("#reportLog"),
+    imageState: document.querySelector("#imageState"),
+    imageLink: document.querySelector("#imageLink"),
+    preview: document.querySelector("#preview"),
+  };
+
+  let socket = null;
+  let connected = false;
+  let activeJobId = null;
+
+  const wsScheme = location.protocol === "https:" ? "wss" : "ws";
+  elements.wsUrl.value = `${wsScheme}://${location.host}/ws/rooms/event`;
+
+  function seedRequest() {
+    return {
+      room_id: elements.roomId.value.trim(),
+      user_id: elements.userId.value.trim(),
+      job_id: crypto.randomUUID(),
+      connections: [
+        { part_node_id: "16161616-1616-1616-1616-161616160002", node_id: "16161616-1616-1616-1616-161616160003" },
+        { part_node_id: "16161616-1616-1616-1616-161616160004", node_id: "16161616-1616-1616-1616-161616160005" },
+        { part_node_id: "16161616-1616-1616-1616-161616160006", node_id: "16161616-1616-1616-1616-161616160007" },
+        { part_node_id: "16161616-1616-1616-1616-161616160006", node_id: "16161616-1616-1616-1616-161616160008" },
+      ],
+    };
+  }
+
+  function refreshRequestJson() {
+    elements.requestJson.value = JSON.stringify(seedRequest(), null, 2);
+  }
+
+  function log(label, data) {
+    const timestamp = new Date().toLocaleTimeString();
+    const content = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    elements.eventLog.textContent += `[${timestamp}] ${label}\n${content}\n\n`;
+    elements.eventLog.scrollTop = elements.eventLog.scrollHeight;
+  }
+
+  function setStatus(state, text) {
+    elements.status.className = `status ${state}`;
+    elements.statusText.textContent = text;
+  }
+
+  function setConnected(value) {
+    connected = value;
+    elements.connectButton.disabled = value;
+    elements.disconnectButton.disabled = !value;
+    elements.generateButton.disabled = !value;
+    elements.roomId.disabled = value;
+    elements.userId.disabled = value;
+    elements.wsUrl.disabled = value;
+  }
+
+  function showImage(url, eventType, jobId) {
+    elements.imageState.textContent = `${eventType} 수신 성공 · job_id=${jobId || "없음"}`;
+    elements.imageLink.href = url;
+    elements.imageLink.textContent = url;
+    elements.preview.src = url;
+    elements.preview.style.display = "block";
+    elements.preview.onload = () => {
+      elements.imageState.textContent += " · 브라우저 이미지 로드 성공";
+    };
+    elements.preview.onerror = () => {
+      elements.imageState.textContent += " · URL은 수신했지만 브라우저 이미지 로드 실패";
+    };
+  }
+
+  elements.connectButton.addEventListener("click", () => {
+    if (socket && socket.readyState <= WebSocket.OPEN) return;
+    refreshRequestJson();
+    setStatus("", "연결 중...");
+    socket = new WebSocket(elements.wsUrl.value.trim());
+
+    socket.addEventListener("open", () => {
+      setConnected(true);
+      setStatus("connected", "소켓 연결됨 · 등록 ACK 대기");
+      const connectEvent = {
+        event_type: "WS_CONNECT",
+        room_id: elements.roomId.value.trim(),
+        user_id: elements.userId.value.trim(),
+        payload: {},
+      };
+      socket.send(JSON.stringify(connectEvent));
+      log("SEND WS_CONNECT", connectEvent);
+    });
+
+    socket.addEventListener("message", (message) => {
+      let event;
+      try {
+        event = JSON.parse(message.data);
+      } catch {
+        log("RECEIVE NON-JSON", message.data);
+        return;
+      }
+      log(`RECEIVE ${event.event_type || "UNKNOWN"}`, event);
+      if (event.event_type === "WS_CONNECT" && event.payload?.connected) {
+        setStatus("connected", "WebSocket 등록 완료");
+      }
+      if (event.event_type === "2D_GENERATED" || event.event_type === "2D_COLOR_CHANGED") {
+        const url = event.payload?.img_url;
+        if (url) showImage(url, event.event_type, event.job_id);
+      }
+      if (event.event_type === "ERROR") {
+        setStatus("error", `서버 ERROR · ${event.payload?.code || "UNKNOWN"}`);
+      }
+    });
+
+    socket.addEventListener("error", () => {
+      setStatus("error", "WebSocket 오류");
+      log("SOCKET ERROR", "브라우저 개발자 도구와 서버 로그를 확인하세요.");
+    });
+
+    socket.addEventListener("close", (event) => {
+      setConnected(false);
+      setStatus("", `연결 종료 · code=${event.code}`);
+      log("SOCKET CLOSED", { code: event.code, reason: event.reason });
+    });
+  });
+
+  elements.disconnectButton.addEventListener("click", () => socket?.close(1000, "manual close"));
+
+  elements.generateButton.addEventListener("click", async () => {
+    try {
+      const request = JSON.parse(elements.requestJson.value);
+      request.room_id = elements.roomId.value.trim();
+      request.user_id = elements.userId.value.trim();
+      request.job_id = crypto.randomUUID();
+      activeJobId = request.job_id;
+      elements.requestJson.value = JSON.stringify(request, null, 2);
+      elements.requestResult.textContent = `요청 중 · job_id=${activeJobId}`;
+      const response = await fetch("/api/2d/generate/graph", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      const body = await response.json();
+      elements.requestResult.textContent = `HTTP ${response.status} · ${body.code || "코드 없음"} · job_id=${activeJobId}`;
+      log("2D GENERATION HTTP RESPONSE", body);
+    } catch (error) {
+      elements.requestResult.textContent = `요청 실패 · ${error.message}`;
+      log("2D GENERATION REQUEST ERROR", String(error));
+    }
+  });
+
+  elements.reportButton.addEventListener("click", async () => {
+    try {
+      const response = await fetch(`/report/${elements.roomId.value.trim()}`);
+      const body = await response.json();
+      elements.reportLog.textContent = JSON.stringify(body, null, 2);
+      const imageUrl = body.result?.final_2D_image;
+      if (imageUrl) showImage(imageUrl, "REPORT200", activeJobId);
+    } catch (error) {
+      elements.reportLog.textContent = `보고서 조회 실패: ${error.message}`;
+    }
+  });
+
+  elements.clearButton.addEventListener("click", () => { elements.eventLog.textContent = ""; });
+  elements.roomId.addEventListener("change", refreshRequestJson);
+  elements.userId.addEventListener("change", refreshRequestJson);
+  refreshRequestJson();
+</script>
+</body>
+</html>

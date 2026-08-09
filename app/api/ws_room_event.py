@@ -43,6 +43,7 @@ GRAPH_INTERACTION_EVENTS = {
 }
 
 ACK_REQUIRED_EVENTS = {
+    "WS_CONNECT",
     "NODE_CREATE",
     "EDGE_CREATE",
 }
@@ -236,6 +237,9 @@ async def route_ws_event(
     event: WSEvent,
     user_id: UUID | None,
 ) -> tuple[dict | None, list[Any]]:
+    if event.event_type == "WS_CONNECT":
+        return {"connected": True}, []
+
     if event.event_type == "UTTERANCE_CREATE":
         server_events = await handle_utterance_create(
             db=db,
