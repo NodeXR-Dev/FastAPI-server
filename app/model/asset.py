@@ -48,8 +48,19 @@ class Asset(Base):
         server_default=func.now(),
     )
 
+    ws_sent_at: Mapped[object | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     __table_args__ = (
         Index("ix_assets_room_id", "room_id"),
         Index("ix_assets_graph_snapshot_id", "graph_snapshot_id"),
         Index("ix_assets_asset_type", "asset_type"),
+        Index(
+            "ix_assets_room_type_ws_sent",
+            "room_id",
+            "asset_type",
+            "ws_sent_at",
+        ),
     )

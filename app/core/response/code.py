@@ -110,6 +110,11 @@ class ResponseCode(str, Enum):
     HISTORY400 = "HISTORY400"
     HISTORY404 = "HISTORY404"
     HISTORY500 = "HISTORY500"
+
+    # =========================
+    # Report
+    # =========================
+    REPORT200 = "REPORT200"
     
     
 RESPONSE_MESSAGES = {
@@ -176,6 +181,8 @@ RESPONSE_MESSAGES = {
     ResponseCode.HISTORY400 : "노드 그래프 히스토리 조회 요청 실패",
     ResponseCode.HISTORY404 : "노드 그래프 히스토리가 존재하지 않습니다",
     ResponseCode.HISTORY500 :"노드 그래프 히스토리 조회 중 서버 오류가 발생했습니다",
+
+    ResponseCode.REPORT200: "팀 프로젝트 레포트 생성 성공",
 }
 
 
