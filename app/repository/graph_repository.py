@@ -1127,31 +1127,6 @@ class GraphRepository:
 
         return graph_event
 
-    def find_graph_history_snapshots_by_room_id(
-        self,
-        db: Session,
-        *,
-        room_id: UUID,
-    ) -> list[GraphSnapshot]:
-        """
-        GET /api/history 에서 사용한다.
-        NODE_MOVE를 제외하고 graph_event에 연결된 snapshot만 시간순으로 반환한다.
-        """
-        return (
-            db.query(GraphSnapshot)
-            .join(
-                GraphEvent,
-                GraphEvent.graph_snapshot_id == GraphSnapshot.graph_snapshot_id,
-            )
-            .filter(
-                GraphEvent.room_id == room_id,
-                GraphEvent.event_type != GraphEventType.NODE_MOVE,
-                GraphEvent.graph_snapshot_id.isnot(None),
-            )
-            .order_by(GraphEvent.created_at.asc(), GraphEvent.graph_event_id.asc())
-            .all()
-        )
-
     def find_latest_graph_snapshot_by_room_id(
         self,
         db: Session,
@@ -1340,27 +1315,30 @@ class GraphRepository:
         *,
         db: Session,
         room_id: UUID,
-    ) -> list[tuple[GraphEvent, GraphSnapshot]]:
+    ) -> list[GraphSnapshot]:
         """
-        Snapshot이 연결된 모든 graph event를 시간순으로 반환한다.
-        위치만 바뀌고 snapshot을 생성하지 않는 NODE_MOVE만 제외하므로
-        GENERATE_2D에 연결된 snapshot도 히스토리에 포함된다.
+        GET /api/history 에서 사용한다. 방의 스냅샷을 시간순으로 그대로 반환한다.
+
+        예전에는 graph_event 와 조인해서 "이벤트가 달린 스냅샷"만 반환했다.
+        그런데 발화 경로(button_utterance_service)는 스냅샷만 만들고 graph_event 는
+        남기지 않는다. 노드가 실제로 생기는 주 경로가 그쪽이라, 정작 내용이 든
+        스냅샷이 히스토리에서 전부 빠졌다.
+        (실측: 스냅샷 4개 중 히스토리에 잡힌 건 1개, 그마저 sub_graphs 가 빈 초기 상태)
+
+        발화 경로에서 graph_event 를 남기는 방향은 택하지 않았다. 미처리 graph_event 는
+        reflection 배치가 주기적으로 집어가 LLM 을 돌리는 입력이라, 발화마다 이벤트를
+        만들면 그 배치의 동작과 비용이 함께 바뀐다. 히스토리와는 별개의 흐름이다.
+
+        정렬은 version 이 아니라 created_at 기준이다. version 은 nullable 이라
+        비어 있는 스냅샷이 섞이면 순서가 무너진다.
         """
         stmt = (
-            select(GraphEvent, GraphSnapshot)
-            .join(
-                GraphSnapshot,
-                GraphEvent.graph_snapshot_id == GraphSnapshot.graph_snapshot_id,
-            )
-            .where(
-                GraphEvent.room_id == room_id,
-                GraphEvent.graph_snapshot_id.is_not(None),
-                GraphEvent.event_type != GraphEventType.NODE_MOVE,
-            )
+            select(GraphSnapshot)
+            .where(GraphSnapshot.room_id == room_id)
             .order_by(
-                GraphEvent.created_at.asc(),
-                GraphEvent.graph_event_id.asc(),
+                GraphSnapshot.created_at.asc(),
+                GraphSnapshot.graph_snapshot_id.asc(),
             )
         )
 
-        return db.execute(stmt).all()
+        return list(db.execute(stmt).scalars().all())
