@@ -9,6 +9,19 @@ from app.core.logger import get_logger
 
 logger = get_logger(__name__)
 
+# 배경 제거는 시스템 규칙만으로는 자주 무시된다(방·책상·아이가 그려져 나왔다).
+# 이미지 모델에 마지막으로 읽히는 자리에 한 번 더 못을 박는다.
+#
+# 2D 이미지가 나오는 경로는 두 개이고 둘 다 이 문구를 붙여야 한다.
+#   1) 로비 요구사항 기반 최초 생성 → generate_feature_image_prompt
+#   2) 회의 중 '2D 생성' 버튼       → generate_image_prompt
+# (2)에만 붙여 뒀더니 최초 이미지에만 배경이 딸려 나왔다.
+ISOLATED_PRODUCT_SUFFIX = (
+    "The product is isolated on a pure white background, "
+    "cut out with no environment, no room, no furniture, no people, "
+    "and no scenery of any kind. Product only."
+)
+
 
 class OpenAIPromptClient:
     def __init__(self) -> None:
@@ -45,6 +58,8 @@ class OpenAIPromptClient:
 
         if not prompt_text:
             raise ValueError("OpenAI가 빈 feature 기반 이미지 프롬프트를 반환했습니다.")
+
+        prompt_text = f"{prompt_text} {ISOLATED_PRODUCT_SUFFIX}"
 
         logger.info(
             "[openai_feature_prompt_generation_completed] prompt_length=%s",
@@ -83,8 +98,9 @@ Rules:
 - Emphasized part nodes are important visual components.
 - The final prompt should describe a clean, coherent, high-quality 2D concept rendering.
 - Depict exactly ONE isolated product. Never a scene, workspace, studio, or collage.
-- No people, hands, furniture, rooms, or background props unless the product itself is one.
-- Plain neutral background (solid light gray or white). No floor, no shadows of other objects.
+- Pure white background only. No environment, no room, no desk, no floor, no wall, no sky.
+- The product must look cut out on plain white, like a catalog cutout.
+- No people, children, hands, furniture, plants, posters, or decorations of any kind.
 - Single three-quarter view of the whole product, centered, fully visible, nothing cropped.
         """.strip()
 
@@ -114,6 +130,8 @@ Generate one polished English image prompt.
 
         if not prompt_text:
             raise ValueError("OpenAI가 빈 프롬프트를 반환했습니다.")
+
+        prompt_text = f"{prompt_text} {ISOLATED_PRODUCT_SUFFIX}"
 
         logger.info(
             "[openai_prompt_generation_completed] prompt_length=%s",
