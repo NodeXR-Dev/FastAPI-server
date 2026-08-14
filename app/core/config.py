@@ -31,7 +31,17 @@ class Settings(BaseSettings):
     MESHY_POLL_INTERVAL_SECONDS: float = 5.0
     MESHY_POLL_TIMEOUT_SECONDS: float = 900.0
     MESHY_HTTP_TIMEOUT_SECONDS: float = 60.0
-    
+
+    # Meshy 는 리메시를 켜지 않으면 원본 밀도 그대로 내보낸다.
+    # 실측(2026-08-15): 삼각형 196만 개 / GLB 81MB.
+    # 그중 텍스처는 2.4MB 뿐이고 나머지 78.9MB 가 전부 지오메트리였다.
+    # Quest 가 씬 전체로 감당하는 양이 그 정도라 모델 하나로 예산을 다 쓰고,
+    # 헤드셋이 매번 81MB 를 내려받아야 한다.
+    # 0 이하로 두면 상한을 걸지 않는다(예전 동작).
+    MESHY_TARGET_POLYCOUNT: int = 30000
+    MESHY_TOPOLOGY: str = "triangle"
+
+
     EMBEDDING_DIM: int = 1536
     
     TOPIC_DRIFT_THRESHOLD: float = 0.55
