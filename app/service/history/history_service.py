@@ -20,20 +20,16 @@ class HistoryService:
         db: Session,
         room_id: UUID,
     ) -> dict[str, Any]:
-        rows = self.graph_repository.find_history_snapshots_by_room_id(
+        snapshots = self.graph_repository.find_history_snapshots_by_room_id(
             db=db,
             room_id=room_id,
         )
 
         history: list[dict[str, Any]] = []
-        seen_snapshot_ids: set[UUID] = set()
 
-        for graph_event, graph_snapshot in rows:
-            if graph_snapshot.graph_snapshot_id in seen_snapshot_ids:
-                continue
-
-            seen_snapshot_ids.add(graph_snapshot.graph_snapshot_id)
-
+        # 스냅샷을 직접 받으므로 예전의 중복 제거(seen_snapshot_ids)는 필요 없다.
+        # 조인 때문에 같은 스냅샷이 이벤트 수만큼 나오던 상황이 사라졌다.
+        for graph_snapshot in snapshots:
             snapshot_data = self._parse_snapshot_data(
                 graph_snapshot.snapshot_data,
             )
@@ -47,7 +43,13 @@ class HistoryService:
             history_item.pop("_generation_context", None)
 
             if "graph_version" not in history_item:
-                history_item["graph_version"] = graph_snapshot.version
+                # version 은 nullable 이라 비어 있으면 순번으로 채운다.
+                # 클라 타임라인이 이 값을 눈금 라벨로 쓰므로 null 이면 안 된다.
+                history_item["graph_version"] = (
+                    graph_snapshot.version
+                    if graph_snapshot.version is not None
+                    else len(history) + 1
+                )
 
             history_item.setdefault("core_2d_image", None)
             history_item.setdefault("sub_graphs", [])
