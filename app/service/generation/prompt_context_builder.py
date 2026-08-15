@@ -3,6 +3,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.core.logger import get_logger
 from app.repository.feature_repository import FeatureRepository
 from app.repository.graph_repository import GraphRepository
 from app.repository.room_repository import RoomRepository
@@ -11,6 +12,9 @@ from app.schema.generation.generation_result import (
     ConnectionPromptInfo,
     PromptContext,
 )
+
+logger = get_logger(__name__)
+
 
 class PromptContextBuilder:
     def __init__(
@@ -101,13 +105,22 @@ class PromptContextBuilder:
             UUID | None,
             list[ConnectionPromptInfo],
         ] = defaultdict(list)
+        skipped_connections: list[str] = []
         for connection in snapshot_connections:
             part_entry = node_by_id.get(connection.part_node_id)
             target_entry = node_by_id.get(connection.node_id)
             if part_entry is None or target_entry is None:
-                raise ValueError(
-                    "Input Snapshot에서 생성 Connection의 Node를 찾을 수 없습니다."
+                # 모르는 Node 를 가리키는 Connection 하나 때문에 생성 전체를 죽이지
+                # 않는다. 클라이언트가 서버에 등록되지 않은 로컬 Node 를 연결에
+                # 실어 보내는 경우가 있는데, 예전에는 여기서 예외가 나면서 이미지가
+                # 아예 만들어지지 않아 사용자 화면에는 목업만 남았다.
+                #   실측 2026-08-15 06:43 room 65c977b8:
+                #   connection.node_id=b406fce1 이 nodes 테이블에 없음 → 생성 실패
+                # 그 Connection 만 빼고 나머지로 생성한다.
+                skipped_connections.append(
+                    f"part={connection.part_node_id} node={connection.node_id}"
                 )
+                continue
 
             target_node, sub_graph_id = target_entry
             node_chain_texts = self._build_snapshot_node_chain_texts(
@@ -122,6 +135,14 @@ class PromptContextBuilder:
                     node_chain_texts=node_chain_texts,
                     sub_graph_id=sub_graph_id,
                 )
+            )
+
+        if skipped_connections:
+            logger.warning(
+                "[prompt_context_unknown_connections_skipped] room_id=%s | count=%s | %s",
+                room_id,
+                len(skipped_connections),
+                " / ".join(skipped_connections),
             )
 
         return PromptContext(
