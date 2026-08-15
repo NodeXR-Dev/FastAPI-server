@@ -283,11 +283,30 @@ class GraphRepository:
             key=str,
         )
 
+        # PART 는 sub_graph 에 속하지 않아(sub_graph_id is None) 위 분류에서 전부
+        # 빠진다. 그런데 2D 생성은 Connection 의 part_node_id 를 snapshot 안에서
+        # 찾으므로, PART 가 없으면 연결을 건 생성이 항상 실패했다.
+        #   실측 2026-08-15: connection_count=1 →
+        #   "Input Snapshot에서 생성 Connection의 Node를 찾을 수 없습니다."
+        # 그래서 PART 를 최상위에 따로 싣는다(기존 sub_graphs 구조는 그대로 둔다).
+        part_nodes = [
+            self._build_node_snapshot(
+                node=node,
+                used_in_generation=node.node_id in used_node_ids,
+                reference=reference_by_node_id.get(node.node_id),
+            )
+            for node in sorted(
+                (node for node in nodes if node.sub_graph_id is None),
+                key=lambda item: str(item.node_id),
+            )
+        ]
+
         snapshot_data = {
             "graph_version": version,
             "core_2d_image": self._build_core_2d_image_snapshot(
                 core_2d_image=core_2d_image,
             ),
+            "part_nodes": part_nodes,
             "sub_graphs": [
                 {
                     "sub_graph_id": str(sub_graph_id),
