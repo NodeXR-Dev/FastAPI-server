@@ -10,6 +10,7 @@ from app.core.response.code import ResponseCode
 from app.core.response.exceptions import BadRequestException
 from app.core.response.response import success_response
 from app.db.session import get_db
+from app.repository.asset_repository import AssetRepository
 from app.repository.graph_repository import GraphRepository
 from app.schema.generation.request import (
     Generate2DFeatureRequest,
@@ -41,6 +42,44 @@ image_2d_generation_task_service = Image2DGenerationTaskService()
 image_2d_color_change_service = Image2DColorChangeService()
 prompt_context_builder = PromptContextBuilder()
 model_3d_generation_service = Model3DGenerationService()
+asset_repository = AssetRepository()
+
+
+@router.get(
+    "/3d/latest/{room_id}",
+    tags=["3D"],
+)
+def get_latest_3d(
+    room_id: UUID,
+    db: Session = Depends(get_db),
+):
+    """방의 최신 3D 모델을 돌려준다.
+
+    3D 는 생성에 1~2분이 걸린다. 그 사이 클라이언트의 WS 가 끊기면 완료
+    이벤트를 보낼 곳이 없어 결과가 사라진다(실측: 완료 6초 전 ws_closed →
+    ws_send_to_user_skip). 생성물 자체는 DB 에 남으므로 클라이언트가 방에
+    들어올 때 이 조회로 따라잡는다. 앱 재시작·늦은 합류도 같이 해결된다.
+    """
+    asset = asset_repository.find_latest_3d_asset(db=db, room_id=room_id)
+    if asset is None:
+        return success_response(
+            code=ResponseCode.MODEL_3D200,
+            result={"asset_id": None, "model_url": None, "mime_type": None},
+        )
+
+    logger.info(
+        "[3d_latest_served] room_id=%s | asset_id=%s",
+        room_id,
+        asset.asset_id,
+    )
+    return success_response(
+        code=ResponseCode.MODEL_3D200,
+        result={
+            "asset_id": str(asset.asset_id),
+            "model_url": asset.file_url,
+            "mime_type": "model/gltf-binary",
+        },
+    )
 
 
 @router.post(
