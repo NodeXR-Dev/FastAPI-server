@@ -80,6 +80,12 @@ class PromptContextBuilder:
             raise ValueError("요청 Connection과 Input Snapshot이 일치하지 않습니다.")
 
         node_by_id: dict[UUID, tuple[dict, UUID | None]] = {}
+        # PART 는 sub_graph 에 속하지 않아 snapshot 의 part_nodes 에 따로 실린다.
+        # 이걸 같이 넣지 않으면 Connection 의 part_node_id 를 찾지 못해
+        # 연결을 건 생성이 항상 실패한다.
+        for part_node in snapshot_data.get("part_nodes", []):
+            node_by_id[UUID(str(part_node["node_id"]))] = (part_node, None)
+
         for sub_graph in snapshot_data.get("sub_graphs", []):
             sub_graph_id_value = sub_graph.get("sub_graph_id")
             sub_graph_id = (
