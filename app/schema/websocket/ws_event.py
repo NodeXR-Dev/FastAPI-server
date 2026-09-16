@@ -17,6 +17,7 @@ from app.schema.graph.ws_event_edge_payload import EdgeCreatePayload, EdgeDelete
 from app.schema.graph.ws_event_node_payload import NodeCreatePayload, NodeDeletePayload, NodeMovePayload, NodeUpdatePayload
 from app.schema.utterance.ws_event_utterance_payload import AutoUtterancePayload
 from app.schema.agent.ws_event_agent_payload import AgentGuidePayload
+from app.schema.report.ws_event_report_payload import ReportGeneratedPayload
 
 
 class WSEvent(BaseModel):
@@ -55,6 +56,11 @@ class AutoUtteranceWSEvent(WSEvent):
 class AgentGuideWSEvent(WSEvent):
     event_type: Literal["AGENT_GUIDE"] = "AGENT_GUIDE"
     payload: AgentGuidePayload
+
+
+class ReportGeneratedWSEvent(WSEvent):
+    event_type: Literal["REPORT_GENERATED"] = "REPORT_GENERATED"
+    payload: ReportGeneratedPayload
 
 class NodeCreateWSEvent(WSEvent):
     event_type: GraphEventType.NODE_CREATE

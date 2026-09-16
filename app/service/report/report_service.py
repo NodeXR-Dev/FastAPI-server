@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -10,8 +11,16 @@ from app.repository.asset_repository import AssetRepository
 from app.repository.report_repository import ReportRepository
 from app.repository.room_repository import RoomRepository
 from app.schema.report.response import ParticipantRatioResponse, ReportResponse
+from app.service.report.meeting_report_service import MeetingReportService
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class ReportResult:
+    response: ReportResponse
+    # 라우터가 BackgroundTasks 에 생성 작업을 걸 때 쓴다. 응답 body 에는 싣지 않는다.
+    report_id: UUID
 
 
 class ReportService:
@@ -21,22 +30,32 @@ class ReportService:
         room_repository: RoomRepository | None = None,
         report_repository: ReportRepository | None = None,
         asset_repository: AssetRepository | None = None,
+        meeting_report_service: MeetingReportService | None = None,
     ) -> None:
         self.room_repository = room_repository or RoomRepository()
         self.report_repository = report_repository or ReportRepository()
         self.asset_repository = asset_repository or AssetRepository()
+        self.meeting_report_service = meeting_report_service or MeetingReportService()
 
     def get_report(
         self,
         *,
         db: Session,
         room_id: UUID,
+        base_url: str | None,
+        user_id: UUID | None = None,
         requested_at: datetime | None = None,
-    ) -> ReportResponse:
+    ) -> ReportResult:
+        """팀 프로젝트 리포트 요약과 회의 리포트 HTML 주소.
+
+        리포트가 아직 없으면 이 요청으로 만든다(생성은 BackgroundTasks). 같은 방에 여러 번
+        요청해도 같은 리포트 주소를 돌려준다.
+        """
         report_requested_at = requested_at or datetime.now(timezone.utc)
         logger.info(
-            "[report_started] room_id=%s | requested_at=%s",
+            "[report_started] room_id=%s | user_id=%s | requested_at=%s",
             room_id,
+            user_id,
             report_requested_at.isoformat(),
         )
 
@@ -65,7 +84,6 @@ class ReportService:
                     if total_utterance_count
                     else 0.0
                 ),
-                utterance_count=utterance_count,
             )
             for user_id, nickname, utterance_count in participant_counts
         ]
@@ -76,44 +94,29 @@ class ReportService:
             requested_at=report_requested_at,
         )
 
-        keywords = self.report_repository.find_keywords(db=db, room_id=room_id)
-
-        # 종료 시각 = 마지막 발화 시각. rooms 에 종료 컬럼이 없다.
-        # 요청 시각을 종료로 쓰면 방을 만들어두고 나중에 리포트를 열었을 때
-        # 회의 시간이 실제보다 훨씬 길게 나온다. 발화가 없으면 요청 시각으로 되돌린다.
-        last_utterance_at = self.report_repository.find_last_utterance_at(
-            db=db,
+        link = self.meeting_report_service.request_report(
+            db,
             room_id=room_id,
-            started_at=room.created_at,
+            user_id=user_id,
+            base_url=base_url,
             requested_at=report_requested_at,
         )
-        ended_at = last_utterance_at or report_requested_at
 
-        # 시계 오차로 음수가 나오지 않도록 0 으로 눌러둔다.
-        duration_seconds = max(
-            0,
-            int((ended_at - room.created_at).total_seconds()),
-        )
-
-        result = ReportResponse(
+        response = ReportResponse(
             topic=room.topic,
             participants=[nickname for _, nickname, _ in participant_counts],
             participants_ratio=participants_ratio,
             final_2D_image=latest_asset.file_url if latest_asset else None,
-            started_at=room.created_at,
-            ended_at=ended_at,
-            duration_seconds=duration_seconds,
-            keywords=keywords,
-            total_utterance_count=total_utterance_count,
+            url=link.report_url,
         )
         logger.info(
             "[report_completed] room_id=%s | participant_count=%s | total_utterance_count=%s "
-            "| keyword_count=%s | duration_seconds=%s | asset_id=%s",
+            "| asset_id=%s | report_id=%s | report_status=%s",
             room_id,
             len(participant_counts),
             total_utterance_count,
-            len(keywords),
-            duration_seconds,
             latest_asset.asset_id if latest_asset else None,
+            link.report_id,
+            link.status,
         )
-        return result
+        return ReportResult(response=response, report_id=link.report_id)

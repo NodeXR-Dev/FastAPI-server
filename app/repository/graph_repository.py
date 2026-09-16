@@ -1146,6 +1146,38 @@ class GraphRepository:
 
         return graph_event
 
+    def find_generation_source_snapshot_id(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+        result_graph_snapshot_id: UUID,
+    ) -> UUID | None:
+        """2D 생성 결과 스냅샷으로부터, 생성에 실제로 입력된 스냅샷 id 를 찾는다.
+
+        assets.graph_snapshot_id 는 생성 직후 core_2d_image 를 붙여 새로 저장한
+        결과 스냅샷을 가리킨다(Image2DAssetGenerationService). 입력 스냅샷 id 는
+        같은 트랜잭션에서 남긴 GENERATE_2D 이벤트 payload 의 source_graph_snapshot_id 에
+        있다. Feature 기반 생성처럼 입력 스냅샷이 없으면 None 이다.
+        """
+        payload = db.scalar(
+            select(GraphEvent.payload)
+            .where(
+                GraphEvent.room_id == room_id,
+                GraphEvent.graph_snapshot_id == result_graph_snapshot_id,
+                GraphEvent.event_type == GraphEventType.GENERATE_2D,
+            )
+            .order_by(GraphEvent.created_at.desc())
+            .limit(1)
+        )
+        if not payload:
+            return None
+        try:
+            source_id = json.loads(payload).get("source_graph_snapshot_id")
+            return UUID(source_id) if source_id else None
+        except (TypeError, ValueError, AttributeError):
+            return None
+
     def find_latest_graph_snapshot_by_room_id(
         self,
         db: Session,

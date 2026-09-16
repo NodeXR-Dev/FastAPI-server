@@ -27,3 +27,4 @@ from app.model.feature import Feature
 from app.model.asset import Asset
 from app.model.reference import Reference
 from app.model.agent import AgentAlert
+from app.model.report import MeetingReport

@@ -140,3 +140,10 @@ class AlertStatus(str, enum.Enum):
     SHOWN = "SHOWN"
     DISMISSED = "DISMISSED"
     RESOLVED = "RESOLVED"
+
+
+class MeetingReportStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    GENERATING = "GENERATING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"

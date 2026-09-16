@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     BATCH_LINK_MIN_CONFIDENCE: float = 0.65
     FACT_DEDUP_SIMILARITY_THRESHOLD: float = 0.82
 
+    # 서버 밖(Unity, 브라우저)에서 여는 주소. 리포트 URL 을 만들 때 쓴다.
+    # 예) https://1.2.3.4.sslip.io  비워 두면 종료 요청이 들어온 주소를 쓴다.
+    PUBLIC_BASE_URL: str | None = None
+    # GENERATING/PENDING 상태로 이 시간 넘게 멈춰 있으면(서버 재시작 등) 다시 돌린다.
+    MEETING_REPORT_STALE_SECONDS: float = 600.0
+    # 명시적 DECISION 이 없는 Topic 의 결론을 LLM 으로 추론할지.
+    MEETING_REPORT_LLM_ENABLED: bool = True
+
     LANGSMITH_TRACING: bool = False
     LANGSMITH_API_KEY: str | None = None
     LANGSMITH_PROJECT: str = "NodeXR-realtime-agent"

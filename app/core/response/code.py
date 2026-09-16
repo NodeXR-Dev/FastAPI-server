@@ -115,6 +115,8 @@ class ResponseCode(str, Enum):
     # Report
     # =========================
     REPORT200 = "REPORT200"
+    REPORT404 = "REPORT404"  # 회의 리포트 없음
+    REPORT500 = "REPORT500"  # 회의 리포트 생성 실패
     
     
 RESPONSE_MESSAGES = {
@@ -183,6 +185,8 @@ RESPONSE_MESSAGES = {
     ResponseCode.HISTORY500 :"노드 그래프 히스토리 조회 중 서버 오류가 발생했습니다",
 
     ResponseCode.REPORT200: "팀 프로젝트 레포트 생성 성공",
+    ResponseCode.REPORT404: "회의 리포트를 찾을 수 없습니다.",
+    ResponseCode.REPORT500: "회의 리포트 생성에 실패했습니다.",
 }
 
 

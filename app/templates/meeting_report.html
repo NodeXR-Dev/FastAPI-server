@@ -1,0 +1,384 @@
+{%- set report = page.report -%}
+{%- set data = page.data -%}
+{%- set status = report.status.value -%}
+{%- set STEP_LABELS = {
+  "PROPOSAL": "제안",
+  "ALTERNATIVE": "대안",
+  "CONSTRAINT": "제약",
+  "CONFLICT": "반론·쟁점",
+  "RATIONALE": "근거",
+  "DECISION": "결정",
+} -%}
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  {%- if status in ["PENDING", "GENERATING"] %}
+  <meta http-equiv="refresh" content="10">
+  {%- endif %}
+  <title>NodeXR Meeting Report</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --surface-muted: #f0f2f5;
+      --text: #1b1f24;
+      --text-muted: #5b6470;
+      --border: #dde1e6;
+      --accent: #3056d3;
+      --accent-soft: #e6ecfb;
+      --decision: #1f7a4d;
+      --decision-soft: #e3f3ea;
+      --warning: #9a5b00;
+      --warning-soft: #fbf0dc;
+      --danger: #b42318;
+      --step-proposal: #3056d3;
+      --step-alternative: #7a4cc2;
+      --step-constraint: #b25e00;
+      --step-conflict: #b42318;
+      --step-rationale: #0f7b8a;
+      --step-decision: #1f7a4d;
+      --node-fill: #ffffff;
+      --node-used: #e6ecfb;
+      --edge: #9aa3ad;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #111418;
+        --surface: #1a1e24;
+        --surface-muted: #222831;
+        --text: #e7eaee;
+        --text-muted: #9aa3ad;
+        --border: #2e353f;
+        --accent: #8aa6ff;
+        --accent-soft: #232d48;
+        --decision: #6fd29c;
+        --decision-soft: #1b3326;
+        --warning: #f0b35a;
+        --warning-soft: #3a2c16;
+        --danger: #ff8a80;
+        --step-proposal: #8aa6ff;
+        --step-alternative: #c3a2f5;
+        --step-constraint: #f0b35a;
+        --step-conflict: #ff8a80;
+        --step-rationale: #6fd0dc;
+        --step-decision: #6fd29c;
+        --node-fill: #1a1e24;
+        --node-used: #232d48;
+        --edge: #5b6470;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+    main { max-width: 960px; margin: 0 auto; padding: 32px 16px 64px; }
+    header.report-header { margin-bottom: 24px; }
+    .eyebrow { font-size: 13px; font-weight: 600; letter-spacing: .04em; color: var(--accent); text-transform: uppercase; }
+    h1 { font-size: 28px; margin: 4px 0 8px; line-height: 1.3; word-break: keep-all; }
+    h2 { font-size: 20px; margin: 0 0 16px; }
+    h3 { font-size: 15px; margin: 20px 0 8px; color: var(--text-muted); font-weight: 600; }
+    .meta { color: var(--text-muted); font-size: 14px; }
+    section.card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+    .stat { background: var(--surface-muted); border-radius: 8px; padding: 12px; }
+    .stat .label { font-size: 12px; color: var(--text-muted); }
+    .stat .value { font-size: 18px; font-weight: 600; word-break: keep-all; }
+    .outcome { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+    @media (max-width: 720px) { .outcome { grid-template-columns: minmax(0, 1fr); } }
+    .outcome img { width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-muted); }
+    dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; margin: 0; font-size: 14px; }
+    dl.kv dt { color: var(--text-muted); }
+    dl.kv dd { margin: 0; word-break: break-all; }
+    .graph-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); margin-top: 16px; }
+    .graph-scroll svg { display: block; }
+    .graph-node rect { fill: var(--node-fill); stroke: var(--border); stroke-width: 1; }
+    .graph-node.used rect { fill: var(--node-used); stroke: var(--accent); stroke-width: 1.5; }
+    .graph-node text { fill: var(--text); font-size: 12px; }
+    .graph-node .type { fill: var(--text-muted); font-size: 9px; letter-spacing: .04em; }
+    .graph-edge { stroke: var(--edge); stroke-width: 1.2; fill: none; }
+    .graph-edge.used { stroke: var(--accent); stroke-width: 2; }
+    .legend { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+    .decision-box { border-left: 4px solid var(--decision); background: var(--decision-soft); padding: 12px 16px; border-radius: 0 8px 8px 0; }
+    .decision-box.none { border-left-color: var(--border); background: var(--surface-muted); color: var(--text-muted); }
+    .decision-box .text { font-size: 17px; font-weight: 600; color: var(--text); }
+    .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--surface-muted); color: var(--text-muted); vertical-align: middle; white-space: nowrap; }
+    .badge.inferred { background: var(--warning-soft); color: var(--warning); }
+    .rationale { margin: 12px 0 0; }
+    ol.journey { list-style: none; margin: 0; padding: 0; position: relative; }
+    ol.journey li { position: relative; padding: 0 0 16px 28px; }
+    ol.journey li::before { content: ""; position: absolute; left: 7px; top: 18px; bottom: 0; width: 2px; background: var(--border); }
+    ol.journey li:last-child::before { display: none; }
+    ol.journey li .dot { position: absolute; left: 0; top: 4px; width: 16px; height: 16px; border-radius: 50%; border: 3px solid var(--surface); background: var(--step-color); box-shadow: 0 0 0 1px var(--step-color); }
+    ol.journey li.unlinked { opacity: .62; }
+    .step-type { font-size: 12px; font-weight: 700; color: var(--step-color); }
+    .step-summary { font-weight: 600; }
+    .quote { font-size: 14px; color: var(--text-muted); margin-top: 4px; }
+    .quote q { color: var(--text); }
+    .step-PROPOSAL { --step-color: var(--step-proposal); }
+    .step-ALTERNATIVE { --step-color: var(--step-alternative); }
+    .step-CONSTRAINT { --step-color: var(--step-constraint); }
+    .step-CONFLICT { --step-color: var(--step-conflict); }
+    .step-RATIONALE { --step-color: var(--step-rationale); }
+    .step-DECISION { --step-color: var(--step-decision); }
+    ul.utterances { list-style: none; margin: 0; padding: 0; }
+    ul.utterances li { padding: 10px 0; border-top: 1px solid var(--border); }
+    ul.utterances li:first-child { border-top: 0; }
+    .utterance-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; color: var(--text-muted); }
+    .utterance-head .speaker { font-weight: 600; color: var(--text); }
+    .score-parts { font-size: 12px; color: var(--text-muted); }
+    .bar-row { margin: 10px 0; }
+    .bar-label { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; }
+    .bar-track { height: 8px; background: var(--surface-muted); border-radius: 999px; overflow: hidden; margin-top: 4px; }
+    .bar-fill { height: 100%; background: var(--accent); border-radius: 999px; }
+    .bar-fill.muted { background: var(--edge); }
+    ul.contrib-items { margin: 4px 0 0; padding-left: 18px; font-size: 13px; color: var(--text-muted); }
+    .note { font-size: 13px; color: var(--text-muted); }
+    details summary { cursor: pointer; color: var(--text-muted); font-size: 14px; }
+    table.plain { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+    table.plain th, table.plain td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--border); vertical-align: top; word-break: break-all; }
+    .status-card { text-align: center; padding: 40px 20px; }
+    .status-card.failed .status-title { color: var(--danger); }
+    .status-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+    code { font-size: 12px; }
+  </style>
+</head>
+<body>
+<main>
+  <header class="report-header">
+    <div class="eyebrow">NodeXR Meeting Report</div>
+    <h1>{{ data.overview.room_topic if data else "회의 리포트" }}</h1>
+    <div class="meta">
+      리포트 v{{ report.report_version }}
+      {%- if data %} · 생성 {{ data.generated_at | kst }}{% endif %}
+    </div>
+  </header>
+
+{% if not data %}
+  <section class="card status-card {{ 'failed' if status == 'FAILED' else '' }}">
+    {% if status == "FAILED" %}
+      <div class="status-title">리포트를 만들지 못했습니다</div>
+      <p class="meta">회의를 다시 종료하면 같은 주소로 다시 생성합니다.</p>
+    {% else %}
+      <div class="status-title">리포트를 만드는 중입니다</div>
+      <p class="meta">마지막 발화까지 반영하는 데 1~2분 걸릴 수 있습니다. 이 페이지는 10초마다 새로고침됩니다.</p>
+    {% endif %}
+  </section>
+{% else %}
+
+  <section class="card" aria-labelledby="overview-title">
+    <h2 id="overview-title">회의 개요</h2>
+    <div class="overview-grid">
+      <div class="stat"><div class="label">시작</div><div class="value">{{ data.overview.started_at | kst }}</div></div>
+      <div class="stat"><div class="label">종료</div><div class="value">{{ data.overview.ended_at | kst }}</div></div>
+      <div class="stat"><div class="label">진행 시간</div><div class="value">{{ data.overview.duration_seconds | duration }}</div></div>
+      <div class="stat"><div class="label">참가자</div><div class="value">{{ data.overview.participants | length }}명</div></div>
+      <div class="stat"><div class="label">발화</div><div class="value">{{ data.overview.total_utterance_count }}건</div></div>
+      <div class="stat"><div class="label">논의 주제</div><div class="value">{{ data.overview.topic_count }}개</div></div>
+    </div>
+    {% if data.overview.participants %}
+    <p class="meta">참가자: {{ data.overview.participants | join(", ") }}</p>
+    {% endif %}
+  </section>
+
+  <section class="card" aria-labelledby="outcome-title">
+    <h2 id="outcome-title">최종 결과물</h2>
+    {% set outcome = data.final_outcome %}
+    {% if not outcome %}
+      <p class="meta">회의 중 참가자에게 전달된 2D 이미지가 없습니다.</p>
+    {% else %}
+      <div class="outcome">
+        <img src="{{ outcome.image_url }}" alt="최종 2D 이미지" loading="lazy">
+        <dl class="kv">
+          <dt>이미지 생성</dt><dd>{{ outcome.image_created_at | kst }}</dd>
+          <dt>근거 그래프</dt>
+          <dd>
+            {% if outcome.graph_snapshot_id %}
+              Graph Snapshot v{{ outcome.graph_snapshot_version if outcome.graph_snapshot_version is not none else "?" }}
+              <span class="badge">이미지 생성에 입력된 그래프</span>
+            {% else %}
+              기록 없음
+            {% endif %}
+          </dd>
+          {% if outcome.graph_captured_at %}
+          <dt>그래프 시점</dt><dd>{{ outcome.graph_captured_at | kst }}</dd>
+          {% endif %}
+          <dt>노드 / 엣지</dt><dd>{{ outcome.nodes | length }}개 / {{ outcome.edges | length }}개</dd>
+          {% if outcome.result_graph_snapshot_version is not none and outcome.result_graph_snapshot_id != outcome.graph_snapshot_id %}
+          <dt>결과 스냅샷</dt><dd>v{{ outcome.result_graph_snapshot_version }} (생성 직후 이미지가 붙은 사본)</dd>
+          {% endif %}
+        </dl>
+      </div>
+
+      {% set layout = page.graph_layout %}
+      {% if layout %}
+      <div class="graph-scroll">
+        <svg width="{{ layout.width }}" height="{{ layout.height }}" viewBox="0 0 {{ layout.width }} {{ layout.height }}" role="img" aria-label="최종 이미지 생성 당시 노드 그래프">
+          {% for edge in layout.edges %}
+          <path class="graph-edge {{ 'used' if edge.used_in_generation else '' }}"
+                d="M {{ edge.x1 }} {{ edge.y1 }} C {{ edge.x1 + 32 }} {{ edge.y1 }}, {{ edge.x2 - 32 }} {{ edge.y2 }}, {{ edge.x2 }} {{ edge.y2 }}">
+            {% if edge.label %}<title>{{ edge.label }}</title>{% endif %}
+          </path>
+          {% endfor %}
+          {% for node in layout.nodes %}
+          <g class="graph-node {{ 'used' if node.used_in_generation else '' }}" transform="translate({{ node.x }}, {{ node.y }})">
+            <title>{{ node.node_type }} · {{ node.node_text }}</title>
+            <rect width="{{ layout.node_width }}" height="{{ layout.node_height }}" rx="8"></rect>
+            <text class="type" x="10" y="14">{{ node.node_type }}</text>
+            <text x="10" y="30">{{ node.label }}</text>
+          </g>
+          {% endfor %}
+        </svg>
+      </div>
+      <div class="legend">파란 테두리: 이미지 생성에 사용된 노드·연결</div>
+      {% endif %}
+
+      {% if outcome.nodes %}
+      <details>
+        <summary>노드·엣지 목록 보기</summary>
+        <table class="plain">
+          <thead><tr><th>유형</th><th>노드</th><th>생성 사용</th></tr></thead>
+          <tbody>
+          {% for node in outcome.nodes %}
+            <tr><td>{{ node.node_type }}</td><td>{{ node.node_text }}</td><td>{{ "예" if node.used_in_generation else "" }}</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </details>
+      {% endif %}
+    {% endif %}
+  </section>
+
+  {% for topic in data.topics %}
+  <section class="card" aria-labelledby="topic-{{ loop.index }}">
+    <div class="eyebrow">Topic {{ loop.index }}</div>
+    <h2 id="topic-{{ loop.index }}">{{ topic.title }}</h2>
+
+    <h3>최종 결정</h3>
+    {% if topic.final_decision.content %}
+      <div class="decision-box">
+        <div class="text">{{ topic.final_decision.content }}</div>
+        {% if topic.final_decision.source == "LLM_INFERRED" %}
+          <span class="badge inferred">명시적 결정이 없어 논의 구조로 추론함</span>
+        {% endif %}
+      </div>
+    {% else %}
+      <div class="decision-box none">이 주제에서는 명확한 결정에 이르지 않았습니다.</div>
+    {% endif %}
+
+    {% if topic.decision_rationale %}
+    <h3>결정 근거</h3>
+    <p class="rationale">{{ topic.decision_rationale }}</p>
+    {% endif %}
+
+    {% if topic.decision_journey %}
+    <h3>Decision Journey</h3>
+    <ol class="journey">
+      {% for step in topic.decision_journey %}
+      <li class="step-{{ step.type }} {{ '' if step.linked_to_decision or not topic.final_decision.design_fact_id else 'unlinked' }}">
+        <span class="dot" aria-hidden="true"></span>
+        <div class="step-type">
+          {{ STEP_LABELS.get(step.type, step.type) }}
+          {% if step.fact_status.value in ["SUPERSEDED", "REJECTED"] %}<span class="badge">번복·폐기됨</span>{% endif %}
+        </div>
+        <div class="step-summary">{{ step.summary }}</div>
+        {% if step.utterance_id %}
+        <div class="quote">
+          {{ step.nickname }} · {{ step.timestamp | kst_time }} — <q>{{ step.evidence[0].text }}</q>
+          {% if step.evidence | length > 1 %}<span class="badge">근거 발화 {{ step.evidence | length }}건</span>{% endif %}
+        </div>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+    {% if topic.final_decision.design_fact_id %}
+    <p class="note">흐리게 표시된 단계는 같은 주제에서 나왔지만 최종 결정과 직접 이어지지 않은 논의입니다.</p>
+    {% endif %}
+    {% endif %}
+
+    {% if topic.meaningful_utterances %}
+    <h3>결론 형성에 영향을 준 발화</h3>
+    <ul class="utterances">
+      {% for item in topic.meaningful_utterances %}
+      <li>
+        <div class="utterance-head">
+          <span class="speaker">{{ item.nickname }}</span>
+          <span>{{ item.timestamp | kst_time }}</span>
+          {% for role in item.roles %}<span class="badge">{{ STEP_LABELS.get(role, role) }}</span>{% endfor %}
+        </div>
+        <div>{{ item.text }}</div>
+        <div class="score-parts">
+          점수 {{ "%.2f" | format(item.score) }} · 결론 관련성 {{ "%.2f" | format(item.conclusion_relevance) }} · 추론 영향 {{ "%.2f" | format(item.reasoning_influence) }} · 정보량 {{ "%.2f" | format(item.information_value) }}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if topic.decision_contributions %}
+    <h3>결론 형성 기여도</h3>
+    {% for person in topic.decision_contributions %}
+    <div class="bar-row">
+      <div class="bar-label"><span>{{ person.nickname }}</span><span>{{ "%.1f" | format(person.contribution_percent) }}%</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width: {{ person.contribution_percent }}%"></div></div>
+      {% if person.contributions %}
+      <ul class="contrib-items">
+        {% for text in person.contributions %}<li>{{ text }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    <details>
+      <summary>근거 데이터 ({{ topic.evidence.supporting_utterance_ids | length }}개 발화 · {{ topic.evidence.supporting_design_fact_ids | length }}개 design fact · {{ topic.evidence.supporting_semantic_memory_ids | length }}개 memory)</summary>
+      <p class="note">최종 결정과 design_fact_links 로 직접 연결된 fact 와 그 원본 발화입니다. 주제 전체 발화 {{ topic.utterance_count }}건.</p>
+    </details>
+  </section>
+  {% else %}
+  <section class="card">
+    <h2>논의 주제</h2>
+    <p class="meta">구조화된 논의가 없습니다.</p>
+  </section>
+  {% endfor %}
+
+  <section class="card" aria-labelledby="participation-title">
+    <h2 id="participation-title">전체 회의 참여도</h2>
+    <p class="note">발화 횟수 기준의 보조 지표입니다. 말을 많이 한 정도이며, 위의 주제별 결론 형성 기여도와는 다릅니다.</p>
+    {% for person in data.overall_participation %}
+    <div class="bar-row">
+      <div class="bar-label"><span>{{ person.nickname }}</span><span>{{ person.utterance_count }}회 · {{ "%.1f" | format(person.ratio) }}%</span></div>
+      <div class="bar-track"><div class="bar-fill muted" style="width: {{ person.ratio }}%"></div></div>
+    </div>
+    {% endfor %}
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>기여도 계산 방식</summary>
+      <p class="note">
+        발화 점수 = 잡음 게이트 × ({{ data.scoring.conclusion_relevance_weight }} × 결론 관련성
+        + {{ data.scoring.reasoning_influence_weight }} × 추론 영향
+        + {{ data.scoring.information_value_weight }} × 정보량).
+        결론 관련성은 발화와 최종 결정의 임베딩 유사도, 추론 영향은 발화가 Decision Journey 에서
+        맡은 역할(결정·제약·근거·반론·대안·제안), 정보량은 맞장구·반복·filler 를 낮게 보는 값입니다.
+        참가자별 합계를 주제 안에서 100% 로 나눴습니다.
+      </p>
+    </details>
+  </section>
+{% endif %}
+</main>
+</body>
+</html>

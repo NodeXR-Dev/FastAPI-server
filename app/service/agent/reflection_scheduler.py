@@ -104,6 +104,41 @@ class ReflectionScheduler:
                 continue
             await self._run_room(room_id)
 
+    async def run_room_until_drained(
+        self,
+        room_id: UUID,
+        *,
+        max_runs: int = 5,
+        retry_delay_seconds: float = 2.0,
+    ) -> None:
+        """한 방의 미처리 발화·그래프 이벤트를 주기를 기다리지 않고 반영한다.
+
+        회의 종료 리포트는 마지막 몇 분의 발화까지 design_fact 로 구조화된 뒤에 만들어야
+        한다. 주기 실행과 같은 advisory lock 을 쓰므로 둘이 겹쳐 돌지 않는다. 주기 실행이
+        이 방을 잡고 있으면 잠시 기다렸다 다시 확인한다. 배치가 실패하면 더 돌지 않는다.
+        """
+        for attempt in range(max_runs):
+            pending_room_ids = await asyncio.to_thread(self.service.find_pending_room_ids)
+            if room_id not in pending_room_ids:
+                return
+            if self._is_backing_off(room_id):
+                return
+            failures_before = self._failure_counts.get(room_id, 0)
+            await self._run_room(room_id)
+            if self._failure_counts.get(room_id, 0) > failures_before:
+                logger.warning(
+                    "[reflection_drain_stopped_on_failure] room_id=%s | attempt=%s",
+                    room_id,
+                    attempt + 1,
+                )
+                return
+            await asyncio.sleep(retry_delay_seconds)
+        logger.warning(
+            "[reflection_drain_incomplete] room_id=%s | max_runs=%s",
+            room_id,
+            max_runs,
+        )
+
     async def _run_room(self, room_id: UUID) -> None:
         lock_db = self.session_factory()
         acquired = False
