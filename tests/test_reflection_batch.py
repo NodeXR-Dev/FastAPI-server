@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -13,6 +14,7 @@ from app.agent.graph.reflection_batch_graph import ReflectionBatchGraph
 from app.agent.schema.reflection_batch_schema import (
     BatchAnalysisResult,
     BatchContext,
+    BatchMemoryRecord,
     BatchUtteranceRecord,
     FactCandidate,
     FactDedupDecision,
@@ -845,3 +847,157 @@ def test_reflection_graph_runs_without_langsmith_export_when_tracing_is_disabled
 
     assert result["persistence_result"] == persistence
     service.persist_reflection.assert_called_once()
+
+
+def test_memory_proposals_are_dropped_instead_of_failing_the_batch():
+    topic_id = uuid4()
+    other_topic_id = uuid4()
+    utterance_id = uuid4()
+    service = ReflectionBatchService(session_factory=Mock())
+
+    decision = FactCandidate(
+        temp_id="decision-1",
+        topic_id=topic_id,
+        fact_type=DesignFactType.DECISION,
+        content="모터는 쓰지 않기로 한다.",
+        source_utterance_ids=[utterance_id],
+        confidence=0.9,
+    )
+    proposal = FactCandidate(
+        temp_id="proposal-1",
+        topic_id=topic_id,
+        fact_type=DesignFactType.PROPOSAL,
+        content="송풍기를 넣는다.",
+        source_utterance_ids=[utterance_id],
+        confidence=0.9,
+    )
+    prepared = PreparedReflection(
+        facts=[decision, proposal],
+        changed_topic_ids=[topic_id],
+    )
+    context = BatchContext(room_id=uuid4())
+
+    def ref(temp_id):
+        return FactReference(reference_type="CANDIDATE", reference_id=temp_id)
+
+    grounded = SemanticMemoryProposal(
+        topic_id=topic_id,
+        memory_type=SemanticMemoryType.DECISION,
+        content="모터를 쓰지 않기로 결정했다.",
+        source_fact_refs=[ref("decision-1")],
+    )
+    # CONFLICT 메모리인데 근거가 PROPOSAL뿐이라 규칙에 어긋난다.
+    ungrounded = SemanticMemoryProposal(
+        topic_id=topic_id,
+        memory_type=SemanticMemoryType.CONFLICT,
+        content="송풍기 도입을 두고 충돌이 있었다.",
+        source_fact_refs=[ref("proposal-1")],
+    )
+    unchanged_topic = SemanticMemoryProposal(
+        topic_id=other_topic_id,
+        memory_type=SemanticMemoryType.SUMMARY,
+        content="이번 batch에서 바뀌지 않은 topic 요약",
+        source_fact_refs=[ref("decision-1")],
+    )
+    unknown_fact = SemanticMemoryProposal(
+        topic_id=topic_id,
+        memory_type=SemanticMemoryType.RATIONALE,
+        content="존재하지 않는 fact를 근거로 든 메모리",
+        source_fact_refs=[ref("does-not-exist")],
+    )
+
+    accepted = service.validate_memory_updates(
+        context=context,
+        prepared=prepared,
+        proposals=[grounded, ungrounded, unchanged_topic, unknown_fact],
+    )
+
+    # 어긋난 제안만 버리고, 정상 제안과 나머지 batch는 살린다.
+    assert accepted == [grounded]
+
+
+def test_duplicate_memory_proposal_for_same_topic_and_type_is_dropped():
+    topic_id = uuid4()
+    service = ReflectionBatchService(session_factory=Mock())
+    candidate = FactCandidate(
+        temp_id="constraint-1",
+        topic_id=topic_id,
+        fact_type=DesignFactType.CONSTRAINT,
+        content="전기 부품을 쓰지 않는다.",
+        source_utterance_ids=[uuid4()],
+        confidence=0.9,
+    )
+    prepared = PreparedReflection(facts=[candidate], changed_topic_ids=[topic_id])
+
+    def proposal(content):
+        return SemanticMemoryProposal(
+            topic_id=topic_id,
+            memory_type=SemanticMemoryType.CONSTRAINT,
+            content=content,
+            source_fact_refs=[
+                FactReference(reference_type="CANDIDATE", reference_id="constraint-1")
+            ],
+        )
+
+    accepted = service.validate_memory_updates(
+        context=BatchContext(room_id=uuid4()),
+        prepared=prepared,
+        proposals=[proposal("첫 번째"), proposal("두 번째")],
+    )
+
+    assert [item.content for item in accepted] == ["첫 번째"]
+
+
+def test_memory_generation_marks_replaceable_existing_memories():
+    """덮어쓰기 대상 메모리를 LLM 입력에 명시해 병합을 유도한다."""
+    changed_topic = uuid4()
+    other_topic = uuid4()
+    captured: dict[str, str] = {}
+
+    class CapturingLLM(SchemaFakeLLM):
+        def with_structured_output(self, schema):
+            def _run(prompt):
+                captured["text"] = prompt.to_string()
+                return self.responses[schema]
+
+            return RunnableLambda(_run)
+
+    node = ReflectionBatchNode(
+        llm=CapturingLLM(
+            {SemanticMemoryProposalBundle: SemanticMemoryProposalBundle()},
+        )
+    )
+    context = BatchContext(
+        room_id=uuid4(),
+        semantic_memories=[
+            BatchMemoryRecord(
+                semantic_memory_id=uuid4(),
+                topic_id=changed_topic,
+                memory_type=SemanticMemoryType.SUMMARY,
+                content="기존 요약: 우산 물기 제거기를 만들기로 했다.",
+            ),
+            BatchMemoryRecord(
+                semantic_memory_id=uuid4(),
+                topic_id=other_topic,
+                memory_type=SemanticMemoryType.SUMMARY,
+                content="다른 토픽 요약.",
+            ),
+        ],
+    )
+
+    asyncio.run(
+        node.generate_memories(
+            PreparedReflection(changed_topic_ids=[changed_topic]),
+            context,
+        )
+    )
+
+    payload = json.loads(captured["text"].split("Prepared reflection:\n", 1)[1])
+    flags = {
+        item["topic_id"]: item["will_be_replaced"]
+        for item in payload["current_memories"]
+    }
+    assert flags[str(changed_topic)] is True
+    assert flags[str(other_topic)] is False
+    assert "기존 요약: 우산 물기 제거기를 만들기로 했다." in captured["text"]
+    assert "REPLACES" in captured["text"]

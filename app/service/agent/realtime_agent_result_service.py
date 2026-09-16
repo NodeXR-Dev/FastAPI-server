@@ -3,6 +3,7 @@ from collections.abc import Callable
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
+from langsmith import trace
 
 from app.agent.schema.realtime_agent_schema import (
     AgentResponse,
@@ -43,70 +44,97 @@ class RealtimeAgentResultService:
         responses: list[AgentResponse],
         generation_requests: list[GenerationRequest],
     ) -> list[dict]:
-        persisted_alerts = await asyncio.to_thread(
-            self._persist_alerts,
-            room_id=room_id,
-            utterance_id=utterance_id,
-            topic_id=topic_id,
-            alerts=alerts,
-        )
-
-        generation_responses: list[AgentResponse] = []
-        for generation_request in generation_requests:
-            try:
-                generation_responses.append(
-                    await self.asset_adapter.enqueue(
-                        room_id=room_id,
-                        user_id=user_id,
-                        request=generation_request,
-                    )
-                )
-            except Exception as error:
-                logger.exception(
-                    "[agent_asset_enqueue_failed] room_id=%s | utterance_id=%s | asset_type=%s | error=%s",
-                    room_id,
-                    utterance_id,
-                    generation_request.asset_type,
-                    str(error),
-                )
-                generation_responses.append(
-                    AgentResponse(
-                        response_type="ASSET_GENERATION",
-                        message="Asset 생성 요청을 처리하지 못했습니다.",
-                    )
-                )
-
-        events = [
-            self._guide_event(
+        with trace(
+            name="BuildAgentGuideEvents",
+            run_type="chain",
+            inputs={
+                "room_id": str(room_id),
+                "utterance_id": str(utterance_id),
+                "topic_id": str(topic_id),
+                "alert_types": [alert.alert_type for alert in alerts],
+                "response_types": [response.response_type for response in responses],
+                "generation_asset_types": [
+                    request.asset_type for request in generation_requests
+                ],
+            },
+            tags=["realtime-agent", "agent-guide"],
+            metadata={"room_id": str(room_id), "topic_id": str(topic_id)},
+        ) as guide_trace:
+            persisted_alerts = await asyncio.to_thread(
+                self._persist_alerts,
                 room_id=room_id,
-                user_id=user_id,
-                guide_id=agent_alert_id,
-                guide_type=alert.alert_type,
-                message=alert.message,
-                evidence={
-                    "agent_alert_id": str(agent_alert_id),
-                    "related_fact_id": str(alert.related_fact_id),
-                    "confidence": alert.confidence,
-                },
+                utterance_id=utterance_id,
+                topic_id=topic_id,
+                alerts=alerts,
             )
-            for agent_alert_id, alert in persisted_alerts
-        ]
-        for response in [*responses, *generation_responses]:
-            events.append(
+
+            generation_responses: list[AgentResponse] = []
+            for generation_request in generation_requests:
+                try:
+                    generation_responses.append(
+                        await self.asset_adapter.enqueue(
+                            room_id=room_id,
+                            user_id=user_id,
+                            request=generation_request,
+                        )
+                    )
+                except Exception as error:
+                    logger.exception(
+                        "[agent_asset_enqueue_failed] room_id=%s | utterance_id=%s | asset_type=%s | error=%s",
+                        room_id,
+                        utterance_id,
+                        generation_request.asset_type,
+                        str(error),
+                    )
+                    generation_responses.append(
+                        AgentResponse(
+                            response_type="ASSET_GENERATION",
+                            message="Asset 생성 요청을 처리하지 못했습니다.",
+                        )
+                    )
+
+            events = [
                 self._guide_event(
                     room_id=room_id,
                     user_id=user_id,
-                    guide_type=response.response_type,
-                    message=response.message,
+                    guide_id=agent_alert_id,
+                    guide_type=alert.alert_type,
+                    message=alert.message,
                     evidence={
-                        "related_fact_ids": [str(value) for value in response.related_fact_ids],
-                        "source_utterance_ids": [
-                            str(value) for value in response.source_utterance_ids
-                        ],
+                        "agent_alert_id": str(agent_alert_id),
+                        "related_fact_id": str(alert.related_fact_id),
+                        "confidence": alert.confidence,
                     },
                 )
-            )
-        return events
+                for agent_alert_id, alert in persisted_alerts
+            ]
+            for response in [*responses, *generation_responses]:
+                events.append(
+                    self._guide_event(
+                        room_id=room_id,
+                        user_id=user_id,
+                        guide_type=response.response_type,
+                        message=response.message,
+                        evidence={
+                            "related_fact_ids": [str(value) for value in response.related_fact_ids],
+                            "source_utterance_ids": [
+                                str(value) for value in response.source_utterance_ids
+                            ],
+                        },
+                    )
+                )
+            if guide_trace is not None:
+                guide_trace.end(
+                    outputs={
+                        "agent_guide_count": len(events),
+                        "guide_types": [
+                            event["payload"]["guide_type"] for event in events
+                        ],
+                        "persisted_alert_count": len(persisted_alerts),
+                        "generation_response_count": len(generation_responses),
+                    }
+                )
+            return events
 
     def _persist_alerts(
         self,

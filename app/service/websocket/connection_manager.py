@@ -167,6 +167,59 @@ class RoomConnectionManager:
 
         return sent
 
+    async def broadcast(
+        self,
+        *,
+        room_id: UUID,
+        message: dict,
+        exclude_websocket: WebSocket | None = None,
+        exclude_user_id: UUID | None = None,
+    ) -> int:
+        """
+        room 안의 모든 연결에 메시지를 보낸다.
+
+        exclude_websocket: 이미 개별 전송한 요청자 소켓을 제외할 때 사용한다.
+        exclude_user_id: 특정 사용자의 모든 연결을 제외할 때 사용한다.
+        """
+        room_key = str(room_id)
+
+        if room_key not in self.active_connections:
+            return 0
+
+        disconnected: list[ClientConnection] = []
+        delivered = 0
+
+        for conn in list(self.active_connections[room_key]):
+            if exclude_websocket is not None and conn.websocket is exclude_websocket:
+                continue
+            if exclude_user_id is not None and conn.user_id == exclude_user_id:
+                continue
+
+            try:
+                await conn.websocket.send_json(message)
+                delivered += 1
+
+            except Exception as e:
+                logger.warning(
+                    "[ws_broadcast_failed] room_id=%s | user_id=%s | error=%s",
+                    room_id,
+                    conn.user_id,
+                    str(e),
+                )
+                disconnected.append(conn)
+
+        for conn in disconnected:
+            self.disconnect(room_id, conn.websocket)
+
+        logger.info(
+            "[ws_broadcast] room_id=%s | event_type=%s | delivered=%d",
+            room_id,
+            message.get("event_type"),
+            delivered,
+        )
+
+        return delivered
+
     def register(
         self,
         *,

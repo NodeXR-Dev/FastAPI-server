@@ -25,6 +25,8 @@ class RealtimeAgentState(TypedDict):
     normalized_text: str
     embedding: list[float]
     topic_id: UUID
+    is_agent_command: bool | None
+    command_text: str
     triggers: TriggerResult
     guard_result: GuardResult
     guard_passed: bool

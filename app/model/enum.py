@@ -19,6 +19,7 @@ class TopicStatus(str, enum.Enum):
 class UtteranceState(str, enum.Enum):
     REFLECT = "REFLECT"
     NOREFLECT = "NOREFLECT"
+    SKIP = "SKIP"
 
 
 class SemanticMemoryType(str, enum.Enum):

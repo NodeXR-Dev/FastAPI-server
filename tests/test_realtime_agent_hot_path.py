@@ -153,7 +153,12 @@ def test_topic_creates_new_topic_when_similarity_is_below_threshold():
         ),
     ],
 )
-def test_trigger_router_supports_no_single_and_multi_trigger(text, expected):
+def test_trigger_router_supports_no_single_and_multi_trigger(text, expected, monkeypatch):
+    # 호출어 게이팅을 끈 legacy 경로에서는 기존 다중 라벨 분류가 그대로 동작한다.
+    from app.agent.node import trigger_router_node as router_module
+
+    monkeypatch.setattr(router_module.settings, "AGENT_WAKE_WORD_REQUIRED", False)
+
     def classify(prompt):
         prompt_text = prompt.messages[-1].content
         if "알루미늄" in prompt_text:
@@ -512,7 +517,7 @@ def test_websocket_sends_all_prepared_events_only_to_request_socket(monkeypatch)
     ]
 
     asyncio.run(
-        ws_room_event.send_server_events_to_requester(
+        ws_room_event.send_server_events(
             websocket=websocket,
             server_events=events,
         )
@@ -527,6 +532,310 @@ def test_websocket_sends_all_prepared_events_only_to_request_socket(monkeypatch)
         call.args[0] is websocket
         for call in manager.send_personal_message.await_args_list
     )
+
+
+def test_wake_word_service_detects_variants_and_strips_call():
+    from app.service.utterance.wake_word_service import WakeWordService
+
+    service = WakeWordService()
+
+    match = service.detect("노드베어, 왜 알루미늄으로 정했지?")
+    assert match.matched
+    assert match.command_text == "왜 알루미늄으로 정했지?"
+
+    # STT가 띄어쓰기나 표기를 흘려도 인식한다.
+    assert service.detect("노드 베어야 이미지 만들어줘").command_text == "이미지 만들어줘"
+    assert service.detect("노드배어 반대 의견 뭐였어?").matched
+
+    # 문장 중간에 불러도 인식하고 나머지 문장을 유지한다.
+    middle = service.detect("아 맞다 노드베어 아까 반대 의견 뭐였지?")
+    assert middle.matched
+    assert middle.command_text == "아 맞다 아까 반대 의견 뭐였지?"
+
+    # 호출어가 없으면 명령이 아니다.
+    assert not service.detect("알루미늄으로 하자").matched
+    assert not service.detect("왜 알루미늄으로 정했지?").matched
+
+
+class _FakeRouterModel:
+    """with_structured_output만 흉내내는 최소 모델."""
+
+    def __init__(self, *, command_type="RATIONALE_RECALL", memory_guard=True):
+        self.command_type = command_type
+        self.memory_guard = memory_guard
+
+    def with_structured_output(self, schema):
+        from app.agent.schema.realtime_agent_schema import (
+            AgentCommandResult,
+            GuardTriggerResult,
+        )
+
+        if schema is AgentCommandResult:
+            return RunnableLambda(
+                lambda _prompt: AgentCommandResult(command_type=self.command_type)
+            )
+        if schema is GuardTriggerResult:
+            return RunnableLambda(
+                lambda _prompt: GuardTriggerResult(memory_guard=self.memory_guard)
+            )
+        return RunnableLambda(lambda _prompt: TriggerResult())
+
+
+def test_trigger_router_routes_wake_word_command_to_single_intent(monkeypatch):
+    from app.agent.node import trigger_router_node as module
+
+    monkeypatch.setattr(module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    node = module.TriggerRouterNode(
+        llm=_FakeRouterModel(command_type="GENERATE_2D"),
+    )
+    state = make_state(normalized_text="노드베어, 콘셉트 이미지를 만들어줘")
+
+    triggers = asyncio.run(node.classify_triggers(state))["triggers"]
+
+    assert triggers.asset_generation is True
+    assert triggers.asset_type == "IMAGE_2D"
+    # 명령 발화에서는 제약 검사를 돌리지 않는다.
+    assert triggers.memory_guard is False
+    assert triggers.rationale_recall is False
+
+
+def test_trigger_router_only_checks_guard_without_wake_word(monkeypatch):
+    from app.agent.node import trigger_router_node as module
+
+    monkeypatch.setattr(module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    node = module.TriggerRouterNode(
+        llm=_FakeRouterModel(command_type="GENERATE_2D", memory_guard=True),
+    )
+    # 호출어 없이 생성을 요청해도 Asset 경로로 가지 않는다.
+    state = make_state(normalized_text="이걸 이미지로 만들어줘")
+
+    triggers = asyncio.run(node.classify_triggers(state))["triggers"]
+
+    assert triggers.memory_guard is True
+    assert triggers.asset_generation is False
+    assert triggers.rationale_recall is False
+    assert triggers.conflict_recall is False
+
+
+def test_agent_command_maps_to_expected_triggers():
+    from app.agent.node.trigger_router_node import TriggerRouterNode
+    from app.agent.schema.realtime_agent_schema import AgentCommandResult
+
+    asset_id = uuid4()
+    cases = {
+        "RATIONALE_RECALL": ("rationale_recall", "NONE"),
+        "CONFLICT_RECALL": ("conflict_recall", "NONE"),
+        "GENERATE_2D": ("asset_generation", "IMAGE_2D"),
+        "GENERATE_3D": ("asset_generation", "MODEL_3D"),
+    }
+    for command_type, (flag, asset_type) in cases.items():
+        triggers = TriggerRouterNode._to_triggers(
+            AgentCommandResult(command_type=command_type, source_asset_id=asset_id)
+        )
+        assert getattr(triggers, flag) is True
+        assert triggers.asset_type == asset_type
+        assert triggers.memory_guard is False
+
+    none_triggers = TriggerRouterNode._to_triggers(
+        AgentCommandResult(command_type="NONE")
+    )
+    assert none_triggers.asset_generation is False
+    assert none_triggers.rationale_recall is False
+    # 3D가 아닌 명령에는 source_asset_id를 넘기지 않는다.
+    assert (
+        TriggerRouterNode._to_triggers(
+            AgentCommandResult(command_type="GENERATE_2D", source_asset_id=asset_id)
+        ).source_asset_id
+        is None
+    )
+
+
+def test_agent_command_utterance_is_stored_as_skip(monkeypatch):
+    from app.model.enum import UtteranceState
+    from app.service.utterance import auto_utterance_service as module
+
+    monkeypatch.setattr(module, "trace", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    utterance_id = uuid4()
+    topic_id = uuid4()
+    room_repository = Mock()
+    room_repository.find_room_by_id.return_value = SimpleNamespace(is_active=True)
+    room_repository.find_joined_member_by_user_id.return_value = SimpleNamespace()
+    utterance_repository = Mock()
+    utterance_repository.create.return_value = SimpleNamespace(
+        utterance_id=utterance_id,
+    )
+    graph = Mock()
+    graph.ainvoke = AsyncMock(return_value={"ws_events": [], "errors": []})
+    service = module.AutoUtteranceService(
+        Mock(),
+        text_preprocess_service=Mock(
+            utterance_preprocess=Mock(
+                return_value="노드베어, 왜 알루미늄으로 정했지?"
+            )
+        ),
+        embedding_service=Mock(embed_text=Mock(return_value=[0.1, 0.2])),
+        topic_routing_service=Mock(route_topic=Mock(return_value=topic_id)),
+        utterance_repository=utterance_repository,
+        room_repository=room_repository,
+        realtime_agent_graph=graph,
+    )
+
+    asyncio.run(
+        service.handle_auto_utterance(
+            room_id=uuid4(),
+            user_id=uuid4(),
+            payload={"utterance": "노드베어, 왜 알루미늄으로 정했지?"},
+        )
+    )
+
+    # 명령 발화는 설계 지식으로 구조화되면 안 되므로 SKIP으로 저장한다.
+    assert utterance_repository.create.call_args.kwargs["state"] is UtteranceState.SKIP
+    graph_kwargs = graph.ainvoke.await_args.kwargs
+    assert graph_kwargs["is_agent_command"] is True
+    assert graph_kwargs["command_text"] == "왜 알루미늄으로 정했지?"
+
+
+def test_noise_filter_keeps_short_but_meaningful_utterances():
+    from app.service.utterance.noise_filter_service import (
+        DROP,
+        FULL_PROCESS,
+        STORE_ONLY,
+        NoiseFilterService,
+    )
+
+    service = NoiseFilterService()
+
+    assert service.classify(normalized_text="음") == DROP
+    assert service.classify(normalized_text="ㅎㅎ") == DROP
+    assert service.classify(normalized_text="응") == STORE_ONLY
+    assert service.classify(normalized_text="네, 좋아요.") == FULL_PROCESS
+    # 짧지만 설계 의미가 있는 발화는 절대 버리지 않는다.
+    for text in ("반대", "동의", "철로", "알루미늄", "싫어"):
+        assert service.classify(normalized_text=text) == FULL_PROCESS
+    # filler로 시작해도 내용이 붙으면 전체 처리한다.
+    assert service.classify(normalized_text="응 그걸로 하자") == FULL_PROCESS
+    # 직전 발화와 동일하면 재처리하지 않는다.
+    assert (
+        service.classify(normalized_text="모터를 빼자", previous_text="모터를 빼자.")
+        == STORE_ONLY
+    )
+
+
+def test_async_dispatch_pushes_agent_events_without_blocking_response(monkeypatch):
+    from app.service.utterance import auto_utterance_service as module
+
+    room_id = uuid4()
+    user_id = uuid4()
+    graph = Mock()
+    graph.ainvoke = AsyncMock(
+        return_value={
+            "ws_events": [{"event_type": "AGENT_GUIDE"}],
+            "errors": [],
+        }
+    )
+    ws_manager = Mock()
+    ws_manager.send_to_user = AsyncMock(return_value=True)
+    ws_manager.broadcast = AsyncMock(return_value=1)
+    monkeypatch.setattr(module.settings, "ROOM_EVENT_BROADCAST_ENABLED", True)
+    service = module.AutoUtteranceService(
+        Mock(),
+        realtime_agent_graph=graph,
+        ws_manager=ws_manager,
+    )
+
+    asyncio.run(
+        service._run_agent_and_push(
+            room_id=room_id,
+            user_id=user_id,
+            utterance_id=uuid4(),
+            original_text="원문",
+            normalized_text="원문",
+            embedding=[0.0] * 768,
+            topic_id=uuid4(),
+        )
+    )
+
+    assert graph.ainvoke.await_count == 1
+    assert ws_manager.send_to_user.await_args.kwargs["user_id"] == user_id
+    assert ws_manager.broadcast.await_args.kwargs["exclude_user_id"] == user_id
+
+
+def test_async_dispatch_failure_does_not_propagate(monkeypatch):
+    from app.service.utterance import auto_utterance_service as module
+
+    graph = Mock()
+    graph.ainvoke = AsyncMock(side_effect=RuntimeError("llm down"))
+    ws_manager = Mock()
+    ws_manager.send_to_user = AsyncMock()
+    service = module.AutoUtteranceService(
+        Mock(),
+        realtime_agent_graph=graph,
+        ws_manager=ws_manager,
+    )
+
+    asyncio.run(
+        service._run_agent_and_push(
+            room_id=uuid4(),
+            user_id=uuid4(),
+            utterance_id=uuid4(),
+            original_text="원문",
+            normalized_text="원문",
+            embedding=[0.0] * 768,
+            topic_id=uuid4(),
+        )
+    )
+
+    assert ws_manager.send_to_user.await_count == 0
+
+
+def test_websocket_broadcasts_to_other_participants_when_enabled(monkeypatch):
+    room_id = uuid4()
+    manager = Mock()
+    manager.send_personal_message = AsyncMock()
+    manager.broadcast = AsyncMock(return_value=1)
+    monkeypatch.setattr(ws_room_event, "room_ws_manager", manager)
+    monkeypatch.setattr(
+        ws_room_event.settings,
+        "ROOM_EVENT_BROADCAST_ENABLED",
+        True,
+    )
+    websocket = Mock()
+    events = [{"event_type": "UTTERANCE_CREATED", "room_id": str(room_id)}]
+
+    asyncio.run(
+        ws_room_event.send_server_events(
+            websocket=websocket,
+            server_events=events,
+        )
+    )
+
+    assert manager.send_personal_message.await_count == 1
+    assert manager.broadcast.await_count == 1
+    broadcast_kwargs = manager.broadcast.await_args.kwargs
+    assert broadcast_kwargs["room_id"] == room_id
+    assert broadcast_kwargs["exclude_websocket"] is websocket
+
+
+def test_websocket_skips_broadcast_when_room_id_is_invalid(monkeypatch):
+    manager = Mock()
+    manager.send_personal_message = AsyncMock()
+    manager.broadcast = AsyncMock()
+    monkeypatch.setattr(ws_room_event, "room_ws_manager", manager)
+    monkeypatch.setattr(
+        ws_room_event.settings,
+        "ROOM_EVENT_BROADCAST_ENABLED",
+        True,
+    )
+
+    asyncio.run(
+        ws_room_event.send_server_events(
+            websocket=Mock(),
+            server_events=[{"event_type": "AGENT_GUIDE", "room_id": "not-a-uuid"}],
+        )
+    )
+
+    assert manager.broadcast.await_count == 0
 
 
 def test_connection_manager_sends_to_matching_user_without_room_multicast():

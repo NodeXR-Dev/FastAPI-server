@@ -89,7 +89,22 @@ class RationaleRecallGraph:
             return {"errors": ["rationale_link_retrieval_failed"]}
 
     async def generate_response(self, state: RealtimeAgentState) -> dict:
-        if not state["retrieved_facts"] and not state["retrieved_memories"]:
+        has_evidence = bool(
+            state["retrieved_facts"] or state["retrieved_memories"]
+        )
+        logger.info(
+            "[rationale_recall_evidence] room_id=%s | utterance_id=%s "
+            "| fact_count=%s | memory_count=%s | link_count=%s "
+            "| source_utterance_count=%s | has_evidence=%s",
+            state["room_id"],
+            state["utterance_id"],
+            len(state["retrieved_facts"]),
+            len(state["retrieved_memories"]),
+            len(state["fact_links"]),
+            len(state["source_utterances"]),
+            has_evidence,
+        )
+        if not has_evidence:
             return {
                 "responses": [
                     AgentResponse(

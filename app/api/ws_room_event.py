@@ -3,9 +3,11 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from langsmith import trace
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.logger import get_logger
 from app.core.response.ws_exception_handler import handle_ws_exception
 from app.core.response.ws_exceptions import (
@@ -116,7 +118,7 @@ async def room_event_websocket(
                         user_id=current_user_id,
                     )
 
-                await send_server_events_to_requester(
+                await send_server_events(
                     websocket=websocket,
                     server_events=server_events,
                 )
@@ -313,20 +315,75 @@ async def handle_utterance_create(
     return ws_events or []
 
 
-async def send_server_events_to_requester(
+async def send_server_events(
     *,
     websocket: WebSocket,
     server_events: list[Any],
 ) -> None:
+    """요청자에게 보내고, 설정이 켜져 있으면 같은 room의 다른 참가자에게도 전파한다."""
     for server_event in server_events:
-        try:
-            await room_ws_manager.send_personal_message(
-                websocket,
-                server_event,
-            )
-        except Exception as send_error:
-            logger.exception(
-                "[ws_server_event_send_failed] event_type=%s | error=%s",
-                server_event.get("event_type"),
-                str(send_error),
-            )
+        with trace(
+            name="WebSocketServerEventDelivery",
+            run_type="tool",
+            inputs={
+                "event_type": server_event.get("event_type"),
+                "room_id": server_event.get("room_id"),
+                "user_id": server_event.get("user_id"),
+            },
+            tags=["websocket", "server-event-delivery"],
+            metadata={"event_type": server_event.get("event_type")},
+        ) as delivery_trace:
+            try:
+                await room_ws_manager.send_personal_message(
+                    websocket,
+                    server_event,
+                )
+                broadcast_count = 0
+                if settings.ROOM_EVENT_BROADCAST_ENABLED:
+                    broadcast_count = await _broadcast_to_other_participants(
+                        websocket=websocket,
+                        server_event=server_event,
+                    )
+                if delivery_trace is not None:
+                    delivery_trace.end(
+                        outputs={
+                            "delivered": True,
+                            "broadcast_count": broadcast_count,
+                        }
+                    )
+            except Exception as send_error:
+                if delivery_trace is not None:
+                    delivery_trace.end(
+                        outputs={"delivered": False, "error_type": type(send_error).__name__}
+                    )
+                logger.exception(
+                    "[ws_server_event_send_failed] event_type=%s | error=%s",
+                    server_event.get("event_type"),
+                    str(send_error),
+                )
+
+
+async def _broadcast_to_other_participants(
+    *,
+    websocket: WebSocket,
+    server_event: dict,
+) -> int:
+    raw_room_id = server_event.get("room_id")
+    if raw_room_id is None:
+        return 0
+
+    try:
+        room_id = UUID(str(raw_room_id))
+    except (TypeError, ValueError):
+        logger.warning(
+            "[ws_broadcast_skipped_invalid_room] event_type=%s | room_id=%s",
+            server_event.get("event_type"),
+            raw_room_id,
+        )
+        return 0
+
+    return await room_ws_manager.broadcast(
+        room_id=room_id,
+        message=server_event,
+        exclude_websocket=websocket,
+    )

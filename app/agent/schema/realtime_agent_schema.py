@@ -6,6 +6,27 @@ from pydantic import BaseModel, Field
 
 AssetIntent = Literal["IMAGE_2D", "MODEL_3D", "REFERENCE", "NONE"]
 
+AgentCommandType = Literal[
+    "RATIONALE_RECALL",
+    "CONFLICT_RECALL",
+    "GENERATE_2D",
+    "GENERATE_3D",
+    "NONE",
+]
+
+
+class AgentCommandResult(BaseModel):
+    """호출어로 Agent를 부른 발화의 명령 종류."""
+
+    command_type: AgentCommandType = "NONE"
+    source_asset_id: UUID | None = None
+
+
+class GuardTriggerResult(BaseModel):
+    """호출어가 없는 일반 발화에 대해 제약 검사가 필요한지."""
+
+    memory_guard: bool = False
+
 
 class TriggerResult(BaseModel):
     memory_guard: bool = False

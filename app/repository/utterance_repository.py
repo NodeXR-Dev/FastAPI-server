@@ -18,6 +18,7 @@ logger = get_logger(__name__)
 class UtteranceRepository:
     @staticmethod
     def unprocessed_condition():
+        # SKIP은 Noise Filter가 저장만 한 발화이므로 reflection 대상에서 제외한다.
         return or_(
             Utterance.state == UtteranceState.NOREFLECT,
             Utterance.state.is_(None),

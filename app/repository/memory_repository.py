@@ -10,6 +10,8 @@ from app.agent.schema.realtime_agent_schema import (
     MemoryRecord,
     SourceUtteranceRecord,
 )
+from app.core.config import settings
+from app.core.logger import get_logger
 from app.model.enum import (
     DesignFactLinkType,
     DesignFactStatus,
@@ -25,6 +27,8 @@ from app.model.memory import (
     SemanticMemory,
     Utterance,
 )
+
+logger = get_logger(__name__)
 
 
 class MemoryRepository:
@@ -301,15 +305,30 @@ class MemoryRepository:
             self._fact_record(fact, similarity=1.0 - float(cosine_distance))
             for fact, cosine_distance in rows
         ]
-        return self._append_fact_fallback(
-            db,
-            records=records,
-            room_id=room_id,
-            topic_id=topic_id,
-            fact_types=fact_types,
-            statuses=statuses,
-            top_k=top_k,
+        vector_count = len(records)
+        records = self._drop_below_min_similarity(records)
+        kept_count = len(records)
+        if settings.AGENT_RETRIEVAL_FALLBACK_ENABLED:
+            records = self._append_fact_fallback(
+                db,
+                records=records,
+                room_id=room_id,
+                topic_id=topic_id,
+                fact_types=fact_types,
+                statuses=statuses,
+                top_k=top_k,
+            )
+        logger.info(
+            "[agent_fact_retrieval] room_id=%s | topic_id=%s | vector_count=%s "
+            "| kept_count=%s | fallback_count=%s | top_similarity=%s",
+            room_id,
+            topic_id,
+            vector_count,
+            kept_count,
+            len(records) - kept_count,
+            self._top_similarity(records),
         )
+        return records
 
     def retrieve_memories(
         self,
@@ -343,14 +362,29 @@ class MemoryRepository:
             self._memory_record(memory, similarity=1.0 - float(cosine_distance))
             for memory, cosine_distance in rows
         ]
-        return self._append_memory_fallback(
-            db,
-            records=records,
-            room_id=room_id,
-            topic_id=topic_id,
-            memory_types=memory_types,
-            top_k=top_k,
+        vector_count = len(records)
+        records = self._drop_below_min_similarity(records)
+        kept_count = len(records)
+        if settings.AGENT_RETRIEVAL_FALLBACK_ENABLED:
+            records = self._append_memory_fallback(
+                db,
+                records=records,
+                room_id=room_id,
+                topic_id=topic_id,
+                memory_types=memory_types,
+                top_k=top_k,
+            )
+        logger.info(
+            "[agent_memory_retrieval] room_id=%s | topic_id=%s | vector_count=%s "
+            "| kept_count=%s | fallback_count=%s | top_similarity=%s",
+            room_id,
+            topic_id,
+            vector_count,
+            kept_count,
+            len(records) - kept_count,
+            self._top_similarity(records),
         )
+        return records
 
     def find_related_fact_context(
         self,
@@ -488,6 +522,26 @@ class MemoryRepository:
             .all()
         )
         return [*records, *(self._memory_record(memory) for memory in fallback)]
+
+    @staticmethod
+    def _drop_below_min_similarity(records: list) -> list:
+        minimum = settings.AGENT_RETRIEVAL_MIN_SIMILARITY
+        if minimum <= 0.0:
+            return records
+        return [
+            record
+            for record in records
+            if record.similarity is not None and record.similarity >= minimum
+        ]
+
+    @staticmethod
+    def _top_similarity(records: list) -> float | None:
+        similarities = [
+            record.similarity
+            for record in records
+            if record.similarity is not None
+        ]
+        return max(similarities) if similarities else None
 
     def _fact_record(
         self,

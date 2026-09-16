@@ -103,6 +103,7 @@ class ReflectionBatchNode:
     ) -> SemanticMemoryProposalBundle:
         if not prepared.changed_topic_ids:
             return SemanticMemoryProposalBundle()
+        changed_topic_ids = set(prepared.changed_topic_ids)
         result = await self.memory_chain.ainvoke(
             {
                 "prepared_reflection_json": json.dumps(
@@ -115,8 +116,13 @@ class ReflectionBatchNode:
                             item.model_dump(mode="json")
                             for item in context.existing_facts
                         ],
-                        "semantic_memories": [
-                            item.model_dump(mode="json")
+                        # 저장은 (topic_id, memory_type)당 1행을 덮어쓰므로,
+                        # 어떤 행이 이번 제안으로 사라질 수 있는지 명시해 병합을 유도한다.
+                        "current_memories": [
+                            {
+                                **item.model_dump(mode="json"),
+                                "will_be_replaced": item.topic_id in changed_topic_ids,
+                            }
                             for item in context.semantic_memories
                         ],
                     },

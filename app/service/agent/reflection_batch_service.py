@@ -375,9 +375,27 @@ class ReflectionBatchService:
                 raise ValueError(
                     f"fact {candidate.temp_id} topic does not match its source utterances"
                 )
-            if not set(candidate.related_existing_fact_ids).issubset(existing_by_id):
-                raise ValueError(
-                    f"fact {candidate.temp_id} references an unknown existing fact"
+            unknown_related_ids = [
+                fact_id
+                for fact_id in candidate.related_existing_fact_ids
+                if fact_id not in existing_by_id
+            ]
+            if unknown_related_ids:
+                # 이 필드는 저장에 쓰이지 않으므로 batch 전체를 실패시키지 않고 버린다.
+                logger.warning(
+                    "[reflection_unknown_related_fact_discarded] temp_id=%s "
+                    "| unknown_ids=%s",
+                    candidate.temp_id,
+                    [str(fact_id) for fact_id in unknown_related_ids],
+                )
+                candidate = candidate.model_copy(
+                    update={
+                        "related_existing_fact_ids": [
+                            fact_id
+                            for fact_id in candidate.related_existing_fact_ids
+                            if fact_id in existing_by_id
+                        ]
+                    }
                 )
             accepted_facts.append(candidate)
 
@@ -522,28 +540,70 @@ class ReflectionBatchService:
         }
         seen: set[tuple[UUID, object]] = set()
         changed_topics = set(prepared.changed_topic_ids)
+        accepted: list[SemanticMemoryProposal] = []
+
         for proposal in proposals:
-            if proposal.topic_id not in changed_topics:
-                raise ValueError("memory proposal references an unchanged topic")
-            key = (proposal.topic_id, proposal.memory_type)
-            if key in seen:
-                raise ValueError("duplicate memory proposal for topic and type")
-            seen.add(key)
-            source_types: set[DesignFactType] = set()
-            for reference in proposal.source_fact_refs:
-                if reference.reference_type == "CANDIDATE":
-                    fact = candidate_by_id.get(reference.reference_id)
-                else:
+            reason = self._memory_proposal_rejection(
+                proposal,
+                candidate_by_id=candidate_by_id,
+                existing_by_id=existing_by_id,
+                decision_existing=decision_existing,
+                changed_topics=changed_topics,
+                seen=seen,
+            )
+            if reason is not None:
+                # 메모리는 fact에서 파생된 요약이라 다음 batch에서 다시 제안될 수 있다.
+                # 제안 하나 때문에 발화 구조화 전체를 롤백하지 않는다.
+                logger.warning(
+                    "[reflection_memory_proposal_discarded] topic_id=%s "
+                    "| memory_type=%s | reason=%s",
+                    proposal.topic_id,
+                    self._enum_value(proposal.memory_type),
+                    reason,
+                )
+                continue
+
+            seen.add((proposal.topic_id, proposal.memory_type))
+            accepted.append(proposal)
+
+        return accepted
+
+    def _memory_proposal_rejection(
+        self,
+        proposal: SemanticMemoryProposal,
+        *,
+        candidate_by_id: dict[str, FactCandidate],
+        existing_by_id: dict[UUID, BatchFactRecord],
+        decision_existing: dict[UUID, FactCandidate],
+        changed_topics: set[UUID],
+        seen: set[tuple[UUID, object]],
+    ) -> str | None:
+        """메모리 제안을 버려야 하는 이유를 돌려준다. 문제가 없으면 None."""
+        if proposal.topic_id not in changed_topics:
+            return "unchanged_topic"
+        if (proposal.topic_id, proposal.memory_type) in seen:
+            return "duplicate_topic_and_type"
+
+        source_types: set[DesignFactType] = set()
+        for reference in proposal.source_fact_refs:
+            if reference.reference_type == "CANDIDATE":
+                fact = candidate_by_id.get(reference.reference_id)
+            else:
+                try:
                     fact_id = self._parse_uuid(reference.reference_id)
-                    fact = existing_by_id.get(fact_id) or decision_existing.get(fact_id)
-                if fact is None or fact.topic_id != proposal.topic_id:
-                    raise ValueError("memory source fact is invalid for its topic")
-                source_types.add(fact.fact_type)
-            if not source_types.intersection(
-                self._MEMORY_SOURCE_TYPES[proposal.memory_type]
-            ):
-                raise ValueError("memory type is not grounded in a compatible fact type")
-        return proposals
+                except ValueError:
+                    return "invalid_source_fact_reference"
+                fact = existing_by_id.get(fact_id) or decision_existing.get(fact_id)
+            if fact is None or fact.topic_id != proposal.topic_id:
+                return "invalid_source_fact"
+            source_types.add(fact.fact_type)
+
+        if not source_types.intersection(
+            self._MEMORY_SOURCE_TYPES[proposal.memory_type]
+        ):
+            return "memory_type_not_grounded"
+
+        return None
 
     @staticmethod
     def build_topic_summary_context(

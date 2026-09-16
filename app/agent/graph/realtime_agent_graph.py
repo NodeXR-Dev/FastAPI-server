@@ -89,6 +89,8 @@ class RealtimeAgentGraph:
         normalized_text: str,
         embedding: list[float],
         topic_id: UUID,
+        is_agent_command: bool | None = None,
+        command_text: str = "",
     ) -> RealtimeAgentState:
         initial_state: RealtimeAgentState = {
             "room_id": room_id,
@@ -98,6 +100,8 @@ class RealtimeAgentGraph:
             "normalized_text": normalized_text,
             "embedding": embedding,
             "topic_id": topic_id,
+            "is_agent_command": is_agent_command,
+            "command_text": command_text,
             "triggers": TriggerResult(),
             "guard_result": GuardResult(),
             "guard_passed": False,
