@@ -151,7 +151,7 @@ class MemoryGuardGraph:
     def create_alert(self, state: RealtimeAgentState) -> dict:
         result = state["guard_result"]
         alert_type = (
-            "DECISION_VIOLATION"
+            "DECISION_CONFLICT"
             if result.violation_type == "DECISION"
             else "CONSTRAINT_VIOLATION"
         )

@@ -17,6 +17,7 @@ from app.agent.schema.realtime_agent_schema import (
     FactRecord,
     GuardResult,
     GuardTriggerResult,
+    MemoryRecord,
     SourceUtteranceRecord,
     TriggerResult,
     UtteranceStructureResult,
@@ -502,8 +503,9 @@ def test_asset_enqueue_failure_does_not_drop_recall_response():
         )
     )
 
+    # Recall 응답의 guide_type은 클라이언트 스펙 이름을 따른다.
     assert [event["payload"]["guide_type"] for event in events] == [
-        "RATIONALE_RECALL",
+        "DECISION_RATIONALE_RECALL",
         "ASSET_GENERATION",
     ]
     assert events[0]["payload"]["message"] == "저장된 근거입니다."
@@ -1136,3 +1138,159 @@ def test_llm_topic_routing_creates_first_topic_without_calling_llm():
 
     assert outcome.topic_id == new_topic_id
     assert outcome.route_kind == "first"
+
+
+def _guide_service():
+    service = RealtimeAgentResultService(
+        session_factory=Mock(),
+        agent_repository=Mock(),
+        asset_adapter=Mock(),
+    )
+    service._persist_alerts = Mock(return_value=[])
+    service._persist_annotation = Mock()
+    return service
+
+
+def test_agent_guide_evidence_follows_the_client_spec_shape():
+    """클라이언트 AGENT_GUIDE 스펙의 evidence 구조를 그대로 채운다."""
+    from datetime import datetime, timezone
+
+    fact_id, memory_id, utterance_id = uuid4(), uuid4(), uuid4()
+    created_at = datetime(2026, 9, 16, 4, 30, tzinfo=timezone.utc)
+    service = _guide_service()
+
+    events = asyncio.run(
+        service.persist_and_build_events(
+            room_id=uuid4(),
+            user_id=uuid4(),
+            utterance_id=uuid4(),
+            topic_id=uuid4(),
+            alerts=[],
+            responses=[
+                AgentResponse(
+                    response_type="RATIONALE_RECALL",
+                    message="콘센트를 쓰지 않기로 한 이유는 …",
+                    related_fact_ids=[fact_id],
+                    source_utterance_ids=[utterance_id],
+                )
+            ],
+            generation_requests=[],
+            current_utterance_text="왜 콘센트를 안 쓰기로 했지?",
+            current_utterance_created_at=created_at,
+            retrieved_facts=[
+                FactRecord(
+                    design_fact_id=fact_id,
+                    topic_id=uuid4(),
+                    fact_type="DECISION",
+                    status="ACTIVE",
+                    content="콘센트는 사용하지 않는다",
+                    target_scope="전원부",
+                    design_dimension="전원",
+                )
+            ],
+            retrieved_memories=[
+                MemoryRecord(
+                    semantic_memory_id=memory_id,
+                    topic_id=uuid4(),
+                    memory_type="DECISION",
+                    status="ACTIVE",
+                    content="전원은 태양광만 쓴다",
+                )
+            ],
+            source_utterances=[
+                SourceUtteranceRecord(
+                    utterance_id=utterance_id,
+                    design_fact_id=fact_id,
+                    link_role="SOURCE",
+                    original_text="텃밭에 콘센트가 하나도 없어.",
+                    user_id=uuid4(),
+                    created_at=created_at,
+                )
+            ],
+        )
+    )
+
+    evidence = events[0]["payload"]["evidence"]
+    assert set(evidence) == {
+        "current_utterance",
+        "related_utterances",
+        "related_facts",
+        "related_memories",
+    }
+    assert evidence["current_utterance"]["text"] == "왜 콘센트를 안 쓰기로 했지?"
+    assert evidence["current_utterance"]["created_at"] == created_at.isoformat()
+
+    fact = evidence["related_facts"][0]
+    assert set(fact) == {
+        "design_fact_id",
+        "fact_type",
+        "status",
+        "summary",
+        "target_scope",
+        "design_dimension",
+    }
+    assert fact["summary"] == "콘센트는 사용하지 않는다"
+    assert fact["target_scope"] == "전원부"
+
+    memory = evidence["related_memories"][0]
+    assert set(memory) == {"memory_id", "memory_type", "status", "summary"}
+    assert memory["memory_id"] == str(memory_id)
+
+    utterance = evidence["related_utterances"][0]
+    assert set(utterance) == {"utterance_id", "text", "user_id", "created_at"}
+    assert utterance["text"] == "텃밭에 콘센트가 하나도 없어."
+
+
+@pytest.mark.parametrize(
+    "response_type,fact_types,expected",
+    [
+        ("RATIONALE_RECALL", ["DECISION"], "DECISION_RATIONALE_RECALL"),
+        ("RATIONALE_RECALL", ["CONSTRAINT"], "CONSTRAINT_RATIONALE_RECALL"),
+        ("RATIONALE_RECALL", ["CONSTRAINT", "DECISION"], "DECISION_RATIONALE_RECALL"),
+        ("RATIONALE_RECALL", [], "DECISION_RATIONALE_RECALL"),
+        ("CONFLICT_RECALL", ["CONFLICT"], "CONFLICT_RATIONALE_RECALL"),
+        ("ASSET_GENERATION", [], "ASSET_GENERATION"),
+    ],
+)
+def test_recall_response_maps_to_spec_guide_type(response_type, fact_types, expected):
+    """Recall 응답은 근거 fact 종류에 따라 스펙 guide_type으로 옮겨진다."""
+    service = _guide_service()
+    cited = [
+        FactRecord(
+            design_fact_id=uuid4(),
+            fact_type=fact_type,
+            status="ACTIVE",
+            content="근거",
+        )
+        for fact_type in fact_types
+    ]
+
+    guide_type = service._response_guide_type(
+        AgentResponse(response_type=response_type, message="m"),
+        cited,
+    )
+
+    assert guide_type == expected
+
+
+def test_guard_alert_uses_spec_decision_conflict_name():
+    """Guard 경고의 guide_type은 스펙 이름(DECISION_CONFLICT)을 쓴다."""
+    from app.agent.subgraph.memory_guard_graph import MemoryGuardGraph
+
+    fact_id = uuid4()
+    graph = MemoryGuardGraph(
+        llm=StructuredFakeLLM(lambda _p: GuardResult()),
+        retrieval_service=Mock(),
+    )
+    state = make_state()
+    state["guard_result"] = GuardResult(
+        violated=True,
+        violation_type="DECISION",
+        related_fact_ids=[fact_id],
+        confidence=0.95,
+        reason="이전 결정과 충돌한다",
+    )
+
+    alerts = graph.create_alert(state)["alerts"]
+
+    assert alerts[0].alert_type == "DECISION_CONFLICT"

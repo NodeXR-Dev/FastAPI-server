@@ -1,4 +1,5 @@
 import operator
+from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -30,6 +31,7 @@ class RealtimeAgentState(TypedDict):
     command_text: str
     triggers: TriggerResult
     annotation: AnnotationDraft | None
+    created_at: datetime | None
     guard_result: GuardResult
     guard_passed: bool
     retrieved_facts: Annotated[list[FactRecord], operator.add]

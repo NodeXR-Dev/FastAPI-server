@@ -90,6 +90,7 @@ class ReflectionBatchService:
                 DesignFactType.PROPOSAL,
                 DesignFactType.DECISION,
                 DesignFactType.CONFLICT,
+                DesignFactType.ISSUE,
             },
         ),
         DesignFactLinkType.OPPOSES: (
@@ -98,6 +99,7 @@ class ReflectionBatchService:
                 DesignFactType.PROPOSAL,
                 DesignFactType.DECISION,
                 DesignFactType.CONFLICT,
+                DesignFactType.ISSUE,
             },
         ),
         DesignFactLinkType.CONSTRAINS: (
@@ -124,7 +126,7 @@ class ReflectionBatchService:
         ),
         DesignFactLinkType.RESOLVES: (
             {DesignFactType.DECISION},
-            {DesignFactType.CONFLICT},
+            {DesignFactType.CONFLICT, DesignFactType.ISSUE},
         ),
         DesignFactLinkType.VIOLATES: (
             {DesignFactType.PROPOSAL, DesignFactType.DECISION},
@@ -137,6 +139,7 @@ class ReflectionBatchService:
         SemanticMemoryType.CONSTRAINT: {DesignFactType.CONSTRAINT},
         SemanticMemoryType.CONFLICT: {
             DesignFactType.CONFLICT,
+            DesignFactType.ISSUE,
             DesignFactType.ARGUMENT_FOR,
             DesignFactType.ARGUMENT_AGAINST,
         },
@@ -889,6 +892,8 @@ class ReflectionBatchService:
                         fact_type=candidate.fact_type,
                         content=candidate.content,
                         embedding=decision.embedding,
+                        target_scope=candidate.target_scope,
+                        design_dimension=candidate.design_dimension,
                     )
                     result.created_fact_count += 1
                 elif decision.action == "KEEP_EXISTING":
@@ -912,6 +917,8 @@ class ReflectionBatchService:
                         fact_type=candidate.fact_type,
                         content=candidate.content,
                         embedding=decision.embedding,
+                        target_scope=candidate.target_scope,
+                        design_dimension=candidate.design_dimension,
                     )
                     result.created_fact_count += 1
                     result.superseded_fact_count += 1
@@ -1206,6 +1213,8 @@ class ReflectionBatchService:
             fact_type=fact.fact_type,
             status=fact.status,
             content=fact.content,
+            target_scope=fact.target_scope,
+            design_dimension=fact.design_dimension,
         )
 
     @staticmethod

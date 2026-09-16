@@ -140,6 +140,8 @@ class MemoryRepository:
         fact_type: DesignFactType,
         content: str,
         embedding: list[float],
+        target_scope: str | None = None,
+        design_dimension: str | None = None,
     ) -> DesignFact:
         fact = DesignFact(
             room_id=room_id,
@@ -148,6 +150,8 @@ class MemoryRepository:
             status=DesignFactStatus.ACTIVE,
             content=content,
             embedding=embedding,
+            target_scope=target_scope,
+            design_dimension=design_dimension,
         )
         db.add(fact)
         db.flush()
@@ -453,6 +457,8 @@ class MemoryRepository:
                     design_fact_id=link.design_fact_id,
                     link_role=self._enum_value(link.link_role),
                     original_text=utterance.original_text,
+                    user_id=utterance.user_id,
+                    created_at=utterance.created_at,
                 )
                 for link, utterance in source_rows
             ],
@@ -555,6 +561,8 @@ class MemoryRepository:
             fact_type=self._enum_value(fact.fact_type),
             status=self._enum_value(fact.status),
             content=fact.content,
+            target_scope=fact.target_scope,
+            design_dimension=fact.design_dimension,
             similarity=similarity,
         )
 
@@ -568,6 +576,7 @@ class MemoryRepository:
             semantic_memory_id=memory.semantic_memory_id,
             topic_id=memory.topic_id,
             memory_type=self._enum_value(memory.memory_type),
+            status=self._enum_value(memory.status),
             content=memory.content,
             similarity=similarity,
         )

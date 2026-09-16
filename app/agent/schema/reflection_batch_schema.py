@@ -43,6 +43,8 @@ class BatchFactRecord(BaseModel):
     fact_type: DesignFactType
     status: DesignFactStatus
     content: str
+    target_scope: str | None = None
+    design_dimension: str | None = None
 
 
 class BatchMemoryRecord(BaseModel):
@@ -83,6 +85,9 @@ class FactCandidate(BaseModel):
     source_utterance_ids: list[UUID] = Field(min_length=1)
     confidence: float = Field(ge=0.0, le=1.0)
     related_existing_fact_ids: list[UUID] = Field(default_factory=list)
+    # AGENT_GUIDE evidence에 그대로 실린다. 모르면 비워 둔다.
+    target_scope: str | None = Field(default=None, max_length=120)
+    design_dimension: str | None = Field(default=None, max_length=120)
 
     @field_validator("temp_id", "content")
     @classmethod

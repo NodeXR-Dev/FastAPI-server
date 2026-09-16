@@ -1,3 +1,4 @@
+from datetime import datetime
 from functools import lru_cache
 from typing import Any
 from uuid import UUID
@@ -93,6 +94,7 @@ class RealtimeAgentGraph:
         is_agent_command: bool | None = None,
         command_text: str = "",
         annotation: AnnotationDraft | None = None,
+        created_at: datetime | None = None,
     ) -> RealtimeAgentState:
         initial_state: RealtimeAgentState = {
             "room_id": room_id,
@@ -106,6 +108,7 @@ class RealtimeAgentGraph:
             "command_text": command_text,
             "triggers": TriggerResult(),
             "annotation": annotation,
+            "created_at": created_at,
             "guard_result": GuardResult(),
             "guard_passed": False,
             "retrieved_facts": [],
@@ -232,6 +235,11 @@ class RealtimeAgentGraph:
                 responses=state["responses"],
                 generation_requests=state["generation_requests"],
                 annotation=state.get("annotation"),
+                current_utterance_text=state["original_text"],
+                current_utterance_created_at=state.get("created_at"),
+                retrieved_facts=state["retrieved_facts"],
+                retrieved_memories=state["retrieved_memories"],
+                source_utterances=state["source_utterances"],
             )
             return {"ws_events": events}
         except Exception as error:

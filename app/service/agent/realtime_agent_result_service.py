@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Callable
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
@@ -9,7 +10,10 @@ from app.agent.schema.realtime_agent_schema import (
     AgentResponse,
     AlertDraft,
     AnnotationDraft,
+    FactRecord,
     GenerationRequest,
+    MemoryRecord,
+    SourceUtteranceRecord,
 )
 from app.model.enum import AlertType, DialogueMove, Stance
 from app.repository.agent_repository import AgentRepository
@@ -45,6 +49,11 @@ class RealtimeAgentResultService:
         responses: list[AgentResponse],
         generation_requests: list[GenerationRequest],
         annotation: AnnotationDraft | None = None,
+        current_utterance_text: str | None = None,
+        current_utterance_created_at: datetime | None = None,
+        retrieved_facts: list[FactRecord] | None = None,
+        retrieved_memories: list[MemoryRecord] | None = None,
+        source_utterances: list[SourceUtteranceRecord] | None = None,
     ) -> list[dict]:
         with trace(
             name="BuildAgentGuideEvents",
@@ -102,6 +111,19 @@ class RealtimeAgentResultService:
                         )
                     )
 
+            fact_by_id = {
+                item.design_fact_id: item for item in (retrieved_facts or [])
+            }
+            current_utterance = {
+                "text": current_utterance_text,
+                "user_id": str(user_id) if user_id else None,
+                "created_at": (
+                    current_utterance_created_at.isoformat()
+                    if current_utterance_created_at
+                    else None
+                ),
+            }
+
             events = [
                 self._guide_event(
                     room_id=room_id,
@@ -109,27 +131,44 @@ class RealtimeAgentResultService:
                     guide_id=agent_alert_id,
                     guide_type=alert.alert_type,
                     message=alert.message,
-                    evidence={
-                        "agent_alert_id": str(agent_alert_id),
-                        "related_fact_id": str(alert.related_fact_id),
-                        "confidence": alert.confidence,
-                    },
+                    evidence=self._evidence(
+                        current_utterance=current_utterance,
+                        facts=[fact_by_id[alert.related_fact_id]]
+                        if alert.related_fact_id in fact_by_id
+                        else [],
+                        memories=[],
+                        utterances=[
+                            item
+                            for item in (source_utterances or [])
+                            if item.design_fact_id == alert.related_fact_id
+                        ],
+                    ),
                 )
                 for agent_alert_id, alert in persisted_alerts
             ]
             for response in [*responses, *generation_responses]:
+                cited = [
+                    fact_by_id[fact_id]
+                    for fact_id in response.related_fact_ids
+                    if fact_id in fact_by_id
+                ]
+                cited_utterance_ids = set(response.source_utterance_ids)
                 events.append(
                     self._guide_event(
                         room_id=room_id,
                         user_id=user_id,
-                        guide_type=response.response_type,
+                        guide_type=self._response_guide_type(response, cited),
                         message=response.message,
-                        evidence={
-                            "related_fact_ids": [str(value) for value in response.related_fact_ids],
-                            "source_utterance_ids": [
-                                str(value) for value in response.source_utterance_ids
+                        evidence=self._evidence(
+                            current_utterance=current_utterance,
+                            facts=cited,
+                            memories=retrieved_memories or [],
+                            utterances=[
+                                item
+                                for item in (source_utterances or [])
+                                if item.utterance_id in cited_utterance_ids
                             ],
-                        },
+                        ),
                     )
                 )
             if guide_trace is not None:
@@ -144,6 +183,69 @@ class RealtimeAgentResultService:
                     }
                 )
             return events
+
+    @staticmethod
+    def _response_guide_type(
+        response: AgentResponse,
+        cited_facts: list[FactRecord],
+    ) -> str:
+        """Recall 응답을 스펙의 guide_type으로 옮긴다.
+
+        스펙은 근거가 결정인지 제약인지에 따라 다른 값을 쓴다.
+        ASSET_GENERATION은 스펙에 대응값이 없어 그대로 둔다.
+        """
+        if response.response_type == "CONFLICT_RECALL":
+            return AlertType.CONFLICT_RATIONALE_RECALL.value
+        if response.response_type == "RATIONALE_RECALL":
+            fact_types = {item.fact_type for item in cited_facts}
+            if "CONSTRAINT" in fact_types and "DECISION" not in fact_types:
+                return AlertType.CONSTRAINT_RATIONALE_RECALL.value
+            return AlertType.DECISION_RATIONALE_RECALL.value
+        return response.response_type
+
+    @staticmethod
+    def _evidence(
+        *,
+        current_utterance: dict,
+        facts: list[FactRecord],
+        memories: list[MemoryRecord],
+        utterances: list[SourceUtteranceRecord],
+    ) -> dict:
+        """클라이언트 AGENT_GUIDE 스펙의 evidence 구조로 조립한다."""
+        return {
+            "current_utterance": current_utterance,
+            "related_utterances": [
+                {
+                    "utterance_id": str(item.utterance_id),
+                    "text": item.original_text,
+                    "user_id": str(item.user_id) if item.user_id else None,
+                    "created_at": (
+                        item.created_at.isoformat() if item.created_at else None
+                    ),
+                }
+                for item in utterances
+            ],
+            "related_facts": [
+                {
+                    "design_fact_id": str(item.design_fact_id),
+                    "fact_type": item.fact_type,
+                    "status": item.status,
+                    "summary": item.content,
+                    "target_scope": item.target_scope,
+                    "design_dimension": item.design_dimension,
+                }
+                for item in facts
+            ],
+            "related_memories": [
+                {
+                    "memory_id": str(item.semantic_memory_id),
+                    "memory_type": item.memory_type,
+                    "status": item.status,
+                    "summary": item.content,
+                }
+                for item in memories
+            ],
+        }
 
     def _persist_annotation(
         self,

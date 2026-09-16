@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -94,6 +95,8 @@ class FactRecord(BaseModel):
     fact_type: str
     status: str
     content: str
+    target_scope: str | None = None
+    design_dimension: str | None = None
     similarity: float | None = None
 
 
@@ -101,6 +104,7 @@ class MemoryRecord(BaseModel):
     semantic_memory_id: UUID
     topic_id: UUID | None = None
     memory_type: str
+    status: str = "ACTIVE"
     content: str
     similarity: float | None = None
 
@@ -116,10 +120,12 @@ class SourceUtteranceRecord(BaseModel):
     design_fact_id: UUID
     link_role: str
     original_text: str
+    user_id: UUID | None = None
+    created_at: datetime | None = None
 
 
 class AlertDraft(BaseModel):
-    alert_type: Literal["DECISION_VIOLATION", "CONSTRAINT_VIOLATION"]
+    alert_type: Literal["DECISION_CONFLICT", "CONSTRAINT_VIOLATION"]
     related_fact_id: UUID
     confidence: float
     message: str

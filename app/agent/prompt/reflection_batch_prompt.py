@@ -7,6 +7,7 @@ FACT_RELATIONSHIP_RULES = """
 - CONSTRAINS: CONSTRAINT -> PROPOSAL or DECISION
 - CONFLICTS_WITH: PROPOSAL, DECISION, CONSTRAINT, or CONFLICT -> a different one of those types
 - RATIONALE_OF: RATIONALE -> PROPOSAL or DECISION
+- RESOLVES: DECISION -> ISSUE
 - RESOLVES: DECISION -> CONFLICT
 - VIOLATES: PROPOSAL or DECISION -> CONSTRAINT
 
@@ -35,10 +36,19 @@ REFLECTION_BATCH_ANALYZER_PROMPT = ChatPromptTemplate.from_messages(
             """You structure a batch of Korean collaborative-design utterances into design facts.
 Use only the supplied batch utterances as factual sources. Existing facts and memories are context, not new evidence.
 
-Allowed fact types: PROPOSAL, DECISION, CONSTRAINT, CONFLICT, ARGUMENT_FOR, ARGUMENT_AGAINST, RATIONALE.
+Allowed fact types: PROPOSAL, DECISION, CONSTRAINT, CONFLICT, ARGUMENT_FOR, ARGUMENT_AGAINST, RATIONALE, ISSUE.
+ISSUE is an open problem the team has named but not yet resolved or argued about.
+Use CONFLICT instead when two stated positions oppose each other.
 Every fact must reference at least one utterance_id from this batch and must use that utterance's topic_id.
 Use concise standalone Korean fact text. Do not emit low-value chat, greetings, or questions that contain no design fact.
 Do not create a fact from a request addressed to the agent, such as asking it to generate an image or a 3D model.
+
+target_scope: the part of the product this fact is about, as a short Korean noun phrase
+taken from the utterances, such as '물탱크' or '전원부'. Leave it null when the fact is about
+the whole product or the utterances do not name a part.
+design_dimension: which aspect the fact constrains, as one short Korean word such as
+'재료', '비용', '구조', '안전', '크기', '전원'. Leave it null when no aspect is clear.
+Never invent either value. An empty field is better than a guessed one.
 
 source_utterance_ids must contain utterance_id values from this batch.
 related_existing_fact_ids must contain design_fact_id values taken from the supplied existing facts. Never put an utterance_id there; leave the list empty when no existing fact is clearly related.
@@ -134,7 +144,7 @@ A memory type is allowed only when at least one cited fact has a compatible type
 - SUMMARY: any fact type
 - DECISION: needs a DECISION fact
 - CONSTRAINT: needs a CONSTRAINT fact
-- CONFLICT: needs a CONFLICT, ARGUMENT_FOR, or ARGUMENT_AGAINST fact
+- CONFLICT: needs a CONFLICT, ISSUE, ARGUMENT_FOR, or ARGUMENT_AGAINST fact
 - RATIONALE: needs a RATIONALE fact
 If no cited fact has a compatible type, do not emit that memory at all. Emitting fewer memories is
 better than emitting one that its cited facts cannot support.

@@ -29,6 +29,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.model.agent import AgentAlert
+from app.model.enum import AlertType
 from app.model.memory import (
     DesignFact,
     DesignFactLink,
@@ -50,6 +51,19 @@ PRICE_INPUT = 0.40
 PRICE_OUTPUT = 1.60
 # 예상은 $0.05~0.10이다. 예상의 10배를 넘으면 뭔가 잘못된 것이므로 멈춘다.
 COST_CAP_USD = float(os.environ.get("SCENARIO_COST_CAP", "1.00"))
+
+# 모순 경고로 세는 guide_type. enum에서 끌어와 이름 변경을 따라간다.
+VIOLATION_GUIDE_TYPES = {
+    AlertType.DECISION_CONFLICT.value,
+    AlertType.CONSTRAINT_VIOLATION.value,
+}
+# Recall/생성 guide_type도 스펙 이름을 따른다.
+RECALL_GUIDE_TYPES = {
+    AlertType.DECISION_RATIONALE_RECALL.value,
+    AlertType.CONSTRAINT_RATIONALE_RECALL.value,
+    AlertType.CONFLICT_RATIONALE_RECALL.value,
+    "ASSET_GENERATION",
+}
 
 
 class CostExceeded(RuntimeError):
@@ -442,7 +456,7 @@ def build_report(room_id, timeline, batch_reports, final, cost) -> str:
     expected_guard = [i for i in timeline if i["guard_expected"]]
     got_alert = [
         i for i in timeline
-        if any(g in ("DECISION_VIOLATION", "CONSTRAINT_VIOLATION") for g in i["guides"])
+        if any(g in VIOLATION_GUIDE_TYPES for g in i["guides"])
     ]
     tp = [i for i in expected_guard if i in got_alert]
     fp = [i for i in got_alert if not i["guard_expected"]]
@@ -462,15 +476,18 @@ def build_report(room_id, timeline, batch_reports, final, cost) -> str:
     # (3) 호출어 명령 분류
     commands = [i for i in timeline if i["command_truth"]]
     guide_for_command = {
-        "RATIONALE_RECALL": "RATIONALE_RECALL",
-        "CONFLICT_RECALL": "CONFLICT_RECALL",
-        "GENERATE_2D": "ASSET_GENERATION",
+        "RATIONALE_RECALL": {
+            AlertType.DECISION_RATIONALE_RECALL.value,
+            AlertType.CONSTRAINT_RATIONALE_RECALL.value,
+        },
+        "CONFLICT_RECALL": {AlertType.CONFLICT_RATIONALE_RECALL.value},
+        "GENERATE_2D": {"ASSET_GENERATION"},
     }
     hit = 0
     w(f"\n[호출어 명령 분류]  {len(commands)}건")
     for i in commands:
         want = guide_for_command[i["command_truth"]]
-        ok = want in i["guides"]
+        ok = bool(want.intersection(i["guides"]))
         hit += 1 if ok else 0
         w(f"  {'⭕' if ok else '❌'} [{i['at']}] 기대={i['command_truth']} "
           f"→ 실제 guide={i['guides']}")
@@ -482,8 +499,7 @@ def build_report(room_id, timeline, batch_reports, final, cost) -> str:
     leaked = [
         i for i in timeline
         if not i["command_truth"]
-        and any(g in ("RATIONALE_RECALL", "CONFLICT_RECALL", "ASSET_GENERATION")
-                for g in i["guides"])
+        and any(g in RECALL_GUIDE_TYPES for g in i["guides"])
     ]
     non_command = [i for i in timeline if not i["command_truth"]]
     w(f"\n[호출어 게이팅]  호출어 없는 발화 {len(non_command)}건 중 "

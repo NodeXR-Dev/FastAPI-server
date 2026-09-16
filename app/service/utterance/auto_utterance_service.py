@@ -225,6 +225,7 @@ class AutoUtteranceService:
                     is_agent_command=is_agent_command,
                     command_text=wake_word.command_text,
                     annotation=annotation,
+                    created_at=getattr(utterance, "created_at", None),
                 )
             else:
                 try:
@@ -239,6 +240,7 @@ class AutoUtteranceService:
                         is_agent_command=is_agent_command,
                         command_text=wake_word.command_text,
                         annotation=annotation,
+                        created_at=getattr(utterance, "created_at", None),
                     )
                     agent_events = agent_state.get("ws_events", [])
                     agent_errors = agent_state.get("errors", [])
@@ -315,6 +317,7 @@ class AutoUtteranceService:
         is_agent_command: bool | None = None,
         command_text: str = "",
         annotation: AnnotationDraft | None = None,
+        created_at: object | None = None,
     ) -> None:
         task = asyncio.create_task(
             self._run_agent_and_push(
@@ -328,6 +331,7 @@ class AutoUtteranceService:
                 is_agent_command=is_agent_command,
                 command_text=command_text,
                 annotation=annotation,
+                created_at=created_at,
             )
         )
         _AGENT_TASKS.add(task)
@@ -346,6 +350,7 @@ class AutoUtteranceService:
         is_agent_command: bool | None = None,
         command_text: str = "",
         annotation: AnnotationDraft | None = None,
+        created_at: object | None = None,
     ) -> None:
         """WS 요청 세션과 무관하게 Agent를 실행하고 결과 이벤트를 push한다."""
         started_at = time.perf_counter()
@@ -361,6 +366,7 @@ class AutoUtteranceService:
                 is_agent_command=is_agent_command,
                 command_text=command_text,
                 annotation=annotation,
+                created_at=created_at,
             )
         except asyncio.CancelledError:
             raise
