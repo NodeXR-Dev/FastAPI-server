@@ -19,3 +19,8 @@ class EnterRoomRequest(BaseModel):
 class ExitRoomRequest(BaseModel):
     room_id: UUID
     nickname: NotBlankStr
+
+
+class EndMeetingRequest(BaseModel):
+    # 리포트 완료 이벤트를 받을 사용자. Unity 가 Photon 으로 방 전체에 다시 알린다.
+    user_id: UUID

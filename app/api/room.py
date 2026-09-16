@@ -1,12 +1,19 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
 from sqlalchemy.orm import Session
 
 from app.core.response.response import success_response
 from app.core.response.code import ResponseCode
 from app.db.session import get_db
-from app.schema.room.request import CreateRoomRequest, EnterRoomRequest, ExitRoomRequest
+from app.schema.room.request import (
+    CreateRoomRequest,
+    EndMeetingRequest,
+    EnterRoomRequest,
+    ExitRoomRequest,
+)
+from app.service.report.meeting_report_task_service import MeetingReportTaskService
+from app.service.report.report_service import ReportService
 from app.service.room.room_service import RoomService
 
 router = APIRouter(
@@ -15,6 +22,8 @@ router = APIRouter(
 )
 
 room_service = RoomService()
+report_service = ReportService()
+meeting_report_task_service = MeetingReportTaskService()
 
 
 @router.post("/generate")
@@ -95,4 +104,42 @@ def exit_room(
     return success_response(
         code=ResponseCode.ROOM205,
         result=result
+    )
+
+
+@router.post(
+    "/{room_id}/end",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def end_meeting(
+    room_id: UUID,
+    request: EndMeetingRequest,
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """회의를 끝내고 리포트 생성을 요청한다.
+
+    응답 body 는 GET /report/{room_id} 와 같다. 생성이 끝나면 요청자에게
+    REPORT_GENERATED 를 보낸다. 같은 방에 여러 번 요청해도 리포트는 하나만 만든다.
+    """
+    base_url = str(http_request.base_url)
+    result = report_service.get_report(
+        db=db,
+        room_id=room_id,
+        base_url=base_url,
+        user_id=request.user_id,
+    )
+
+    background_tasks.add_task(
+        meeting_report_task_service.run,
+        report_id=result.report_id,
+        room_id=room_id,
+        user_id=request.user_id,
+        base_url=base_url,
+    )
+
+    return success_response(
+        code=ResponseCode.REPORT200,
+        result=result.response,
     )

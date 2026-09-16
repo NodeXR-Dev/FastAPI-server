@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -19,13 +19,30 @@ from app.model.enum import AssetType
 from app.repository.asset_repository import AssetRepository
 from app.repository.report_repository import ReportRepository
 from app.schema.generation.color_change_request import ColorChangeMetadataRequest
-from app.schema.report.response import ParticipantRatioResponse, ReportResponse
+from app.schema.report.response import (
+    MeetingReportLinkResponse,
+    ParticipantRatioResponse,
+    ReportResponse,
+)
 from app.schema.generation.generation_result import Generated2DAssetResult
 from app.schema.generation.request import Generate2DGraphRequest
 from app.service.generation.image_2d_generation_task_service import (
     Image2DGenerationTaskService,
 )
-from app.service.report.report_service import ReportService
+from app.service.report.report_service import ReportResult, ReportService
+
+
+def _meeting_report_service(report_id=None):
+    report_id = report_id or uuid4()
+    meeting_report_service = Mock()
+    meeting_report_service.request_report.return_value = MeetingReportLinkResponse(
+        report_id=report_id,
+        room_id=uuid4(),
+        report_version=1,
+        status="PENDING",
+        report_url=f"https://nodexr.example/reports/{report_id}",
+    )
+    return meeting_report_service
 
 
 def test_report_router_returns_requested_contract():
@@ -33,22 +50,30 @@ def test_report_router_returns_requested_contract():
     user_id = uuid4()
     db = Mock()
     service = Mock()
-    service.get_report.return_value = ReportResponse(
-        topic="XR 협업 의자",
-        participants=["민지"],
-        participants_ratio=[
-            ParticipantRatioResponse(
-                user_id=user_id,
-                nickname="민지",
-                ratio=100.0,
-            )
-        ],
-        final_2D_image="https://assets.example/final.png",
+    report_id = uuid4()
+    service.get_report.return_value = ReportResult(
+        response=ReportResponse(
+            topic="XR 협업 의자",
+            participants=["민지"],
+            participants_ratio=[
+                ParticipantRatioResponse(
+                    user_id=user_id,
+                    nickname="민지",
+                    ratio=100.0,
+                )
+            ],
+            final_2D_image="https://assets.example/final.png",
+            url=f"https://nodexr.example/reports/{report_id}",
+        ),
+        report_id=report_id,
     )
+    task_service = Mock()
+    task_service.run = AsyncMock()
     app = FastAPI()
     app.include_router(report.router)
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[report.get_report_service] = lambda: service
+    app.dependency_overrides[report.get_meeting_report_task_service] = lambda: task_service
 
     response = TestClient(app).get(f"/report/{room_id}")
 
@@ -68,9 +93,20 @@ def test_report_router_returns_requested_contract():
                 }
             ],
             "final_2D_image": "https://assets.example/final.png",
+            "url": f"https://nodexr.example/reports/{report_id}",
         },
     }
-    service.get_report.assert_called_once_with(db=db, room_id=room_id)
+    service.get_report.assert_called_once_with(
+        db=db,
+        room_id=room_id,
+        base_url="http://testserver/",
+    )
+    task_service.run.assert_awaited_once_with(
+        report_id=report_id,
+        room_id=room_id,
+        user_id=None,
+        base_url="http://testserver/",
+    )
 
 
 def test_report_openapi_uses_room_id_path_parameter_without_request_body():
@@ -121,16 +157,26 @@ def test_report_service_calculates_count_based_ratios_for_all_participants():
         room_repository=room_repository,
         report_repository=report_repository,
         asset_repository=asset_repository,
+        meeting_report_service=_meeting_report_service(),
     )
     db = Mock()
 
     result = service.get_report(
         db=db,
         room_id=room_id,
+        base_url="https://nodexr.example/",
         requested_at=requested_at,
-    )
+    ).response
 
     assert result.topic == "모듈형 의자"
+    assert result.url.startswith("https://nodexr.example/reports/")
+    service.meeting_report_service.request_report.assert_called_once_with(
+        db,
+        room_id=room_id,
+        user_id=None,
+        base_url="https://nodexr.example/",
+        requested_at=requested_at,
+    )
     assert result.participants == ["민지", "서준", "지우"]
     assert [item.ratio for item in result.participants_ratio] == [66.67, 33.33, 0.0]
     report_repository.find_participant_utterance_counts.assert_called_once_with(
@@ -166,9 +212,10 @@ def test_report_service_returns_zero_ratios_when_there_are_no_utterances():
         room_repository=room_repository,
         report_repository=report_repository,
         asset_repository=asset_repository,
+        meeting_report_service=_meeting_report_service(),
     )
 
-    result = service.get_report(db=Mock(), room_id=uuid4())
+    result = service.get_report(db=Mock(), room_id=uuid4(), base_url=None).response
 
     assert [item.ratio for item in result.participants_ratio] == [0.0, 0.0]
 
@@ -183,12 +230,15 @@ def test_report_service_rejects_missing_room():
         room_repository=room_repository,
         report_repository=report_repository,
         asset_repository=asset_repository,
+        meeting_report_service=_meeting_report_service(),
     )
 
     with pytest.raises(NotFoundException) as exc_info:
-        service.get_report(db=Mock(), room_id=uuid4())
+        service.get_report(db=Mock(), room_id=uuid4(), base_url=None)
 
     assert exc_info.value.code == ResponseCode.ROOM404
+    # 없는 방에 리포트 행을 만들지 않는다.
+    service.meeting_report_service.request_report.assert_not_called()
 
 
 def test_report_service_returns_null_when_final_image_does_not_exist():
@@ -205,9 +255,10 @@ def test_report_service_returns_null_when_final_image_does_not_exist():
         room_repository=room_repository,
         report_repository=report_repository,
         asset_repository=asset_repository,
+        meeting_report_service=_meeting_report_service(),
     )
 
-    result = service.get_report(db=Mock(), room_id=uuid4())
+    result = service.get_report(db=Mock(), room_id=uuid4(), base_url=None).response
 
     assert result.final_2D_image is None
 
