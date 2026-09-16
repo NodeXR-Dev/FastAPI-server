@@ -1,0 +1,84 @@
+# 배포용 구성. 개발용 docker-compose.yml 은 그대로 두고 이 파일로 띄운다.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# 개발용과 다른 점만 적으면:
+#   - 소스 bind mount 없음. 이미지에 구운 코드를 쓴다.
+#   - --reload 없음. 파일 감시가 CPU 를 갉아먹고 프로덕션에선 위험하다.
+#   - postgres / minio 를 호스트 포트에 열지 않는다. 컨테이너끼리만 통신한다.
+#   - Caddy 가 앞에 서서 HTTPS 를 자동으로 처리한다.
+#   - 비밀번호를 하드코딩하지 않고 .env 에서 읽는다.
+
+services:
+  # 인터넷에 노출되는 유일한 컨테이너.
+  # Let's Encrypt 인증서를 알아서 발급·갱신한다. WebSocket 도 그대로 통과시킨다.
+  caddy:
+    image: caddy:2-alpine
+    container_name: nodexr-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+
+  backend:
+    build: .
+    container_name: nodexr-backend
+    restart: unless-stopped
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    env_file:
+      - .env
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: nodexr-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # backend 가 DB 준비 전에 떠서 죽는 것을 막는다.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio
+    container_name: nodexr-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+
+volumes:
+  postgres_data:
+  minio_data:
+  caddy_data:
+  caddy_config:

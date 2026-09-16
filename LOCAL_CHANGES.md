@@ -3,7 +3,57 @@
 NodeXR 서버(`FastAPI-server`)를 로컬에서 돌리며 **직접 바꾼 것**과 **왜 바꿨는지**를 모아둔다.
 1절은 서버 애플리케이션 코드 수정이고, 2절부터는 로컬 환경·DB·설정 변경이다.
 
-최종 갱신: 2026-08-06
+최종 갱신: 2026-08-12
+
+---
+
+## 0-B. 코드 수정 — 리포트 응답에 회의 개요 필드 추가 (2026-08-12)
+
+### 무엇을
+
+리포트 화면(피그마 시안)이 요구하는 값을 `GET /api/report/{room_id}` 응답에 추가했다.
+기존 필드(`topic` / `participants` / `participants_ratio` / `final_2D_image`)는 건드리지
+않았으므로 이미 이 API 를 쓰는 코드가 있어도 깨지지 않는다.
+
+```
+ParticipantRatioResponse
+  + utterance_count : int
+
+ReportResponse
+  + started_at            : datetime   rooms.created_at
+  + ended_at              : datetime   마지막 발화 시각
+  + duration_seconds      : int
+  + keywords              : list[str]  그래프 노드 텍스트
+  + total_utterance_count : int
+```
+
+수정 파일: `app/schema/report/response.py`, `app/service/report/report_service.py`,
+`app/repository/report_repository.py`. **마이그레이션은 필요 없다**(기존 테이블만 조회).
+
+### 왜 이렇게 정했나
+
+**발화 "시간" 대신 "횟수".** 시안에는 참여자별 `22분 9초` 처럼 시간이 적혀 있으나
+`utterances` 에 발화 길이 컬럼이 없어 산출이 불가능하다. 게다가 기존 `ratio` 자체가
+발화 **횟수** 기반이라, 시간으로 표기하면 실제와 다른 값을 보여주게 된다.
+시간을 쓰려면 STT 가 녹음 길이를 `/api/utterances` 로 함께 보내고 컬럼을 추가해야 한다
+(클라·서버 양쪽 변경 + 마이그레이션).
+
+**키워드는 그래프 노드에서 뽑는다.** 노드는 발화 추출 단계에서 이미 "Unity 에서 바로
+시각화할 수 있는 짧은 명사구" 로 만들어지므로(`app/ai/prompts/keyword_prompt.py`)
+추가 LLM 호출 없이 칩으로 쓸 수 있다. 삭제된 노드는 제외하고 중복은 합친다.
+`nodes` 에 생성 시각 컬럼이 없어 최신순 정렬은 불가능해 문구 사전순으로 고정했다
+(`node_id` 는 UUID 라 Postgres 에서 `max()` 집계가 되지 않는다 — 실제로 이 쿼리로
+`function max(uuid) does not exist` 를 만났다).
+
+**종료 시각 = 마지막 발화 시각.** 처음에는 리포트 요청 시각을 종료로 봤는데, 방을
+만들어두고 한참 뒤에 리포트를 열면 회의 시간이 터무니없이 길게 나온다
+(시드 방 실측: **45,955분**). 마지막 발화가 실제 종료에 가장 가깝다.
+발화가 없으면 요청 시각으로 되돌린다.
+
+### 클라 쪽에서 처리할 것
+
+노드 텍스트가 시안의 칩보다 길다(예: `물고기와 파도, 작은 쓰레기가 보이는 바닷속 배경`).
+**길이 제한은 클라에서 자른다** — 서버는 원문을 그대로 준다.
 
 ---
 
@@ -44,6 +94,36 @@ Rules 에 4줄을 추가했다. 기존 줄은 건드리지 않았다.
 
 `app/ai/prompts/feature_image_prompt.py`(feature 경로)에는 같은 제약을 아직 넣지 않았다.
 현재 클라는 `2d/generate/graph` 만 쓰기 때문이다. 5-3 절의 프롬프트 이원화 문제와 함께 정리 필요.
+
+---
+
+## 1-B. DB 마이그레이션 적용 — `20260809_01` (2026-08-12)
+
+`develop` 을 받은 뒤 리포트 서비스를 호출하니 즉시 실패했다.
+
+```
+psycopg.errors.UndefinedColumn: column assets.ws_sent_at does not exist
+```
+
+리포트 커밋(`5ac567b`)이 `Asset` 모델에 `ws_sent_at` 을 추가하고 마이그레이션
+`20260809_01_asset_ws_sent_at.py` 도 함께 넣었는데, **로컬 DB 에 적용만 안 돼 있었다.**
+`add_column` + `create_index` 뿐이라 기존 데이터에 안전하다. 백업 후 적용했다.
+
+```
+DB 리비전  20260802_02 → 20260809_01
+```
+
+**[교훈] 스키마 드리프트 점검은 모델을 전부 로드한 뒤에 해야 한다.**
+`import app.model` 만으로는 하위 모듈이 로드되지 않아 `Base.metadata` 가 비어 있고,
+그 상태로 비교하면 "일치" 라는 잘못된 결론이 나온다(실제로 이날 오전 한 번 오판했다).
+
+```python
+import pkgutil, importlib, app.model as m
+for _, name, _ in pkgutil.iter_modules(m.__path__):
+    importlib.import_module(f"app.model.{name}")
+```
+
+`develop` 을 받을 때마다 `alembic heads` 와 DB `alembic_version` 을 비교하는 편이 빠르다.
 
 ---
 

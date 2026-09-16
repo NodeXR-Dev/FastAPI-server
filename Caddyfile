@@ -1,0 +1,13 @@
+# SITE_ADDRESS 는 .env 에서 온다. 예: 1.2.3.4.sslip.io
+# 도메인을 안 사도 sslip.io 가 IP 를 그대로 이름으로 돌려주므로
+# Caddy 가 Let's Encrypt 인증서를 정상적으로 발급받는다.
+{$SITE_ADDRESS} {
+	# 생성된 2D 이미지는 MinIO 가 직접 준다.
+	# 코드가 만드는 URL 이 {MINIO_PUBLIC_BASE_URL}/{버킷}/{파일} 형태라
+	# 버킷 경로만 MinIO 로 넘기면 된다.
+	@assets path /nodexr-2d-assets/*
+	reverse_proxy @assets minio:9000
+
+	# 나머지는 전부 FastAPI. WebSocket 업그레이드도 이 한 줄로 통과한다.
+	reverse_proxy backend:8000
+}

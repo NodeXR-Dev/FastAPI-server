@@ -37,6 +37,8 @@ class MeshyClient:
         poll_interval_seconds: float = settings.MESHY_POLL_INTERVAL_SECONDS,
         poll_timeout_seconds: float = settings.MESHY_POLL_TIMEOUT_SECONDS,
         http_timeout_seconds: float = settings.MESHY_HTTP_TIMEOUT_SECONDS,
+        target_polycount: int = settings.MESHY_TARGET_POLYCOUNT,
+        topology: str = settings.MESHY_TOPOLOGY,
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         monotonic: Callable[[], float] = time.monotonic,
@@ -46,6 +48,8 @@ class MeshyClient:
         self.poll_interval_seconds = poll_interval_seconds
         self.poll_timeout_seconds = poll_timeout_seconds
         self.http_timeout_seconds = http_timeout_seconds
+        self.target_polycount = target_polycount
+        self.topology = topology
         self.transport = transport
         self.sleep = sleep
         self.monotonic = monotonic
@@ -101,13 +105,22 @@ class MeshyClient:
         client: httpx.AsyncClient,
         image_data_uri: str,
     ) -> str:
+        body: dict = {
+            "image_url": image_data_uri,
+            "target_formats": ["glb"],
+        }
+
+        # 폴리곤 상한. should_remesh 를 켜야 target_polycount 가 먹는다.
+        # Unity(glTFast)는 어차피 삼각형으로 읽으므로 quad 로 받을 이유가 없다.
+        if self.target_polycount > 0:
+            body["should_remesh"] = True
+            body["target_polycount"] = self.target_polycount
+            body["topology"] = self.topology
+
         response = await client.post(
             f"{self.base_url}/openapi/v1/image-to-3d",
             headers=self._authorization_headers(),
-            json={
-                "image_url": image_data_uri,
-                "target_formats": ["glb"],
-            },
+            json=body,
         )
         self._raise_for_status(response=response)
         payload = self._parse_json(response=response)

@@ -1,0 +1,19 @@
+# 터널 앞단 프록시.
+#
+# ngrok 무료 계정은 고정 주소가 하나뿐이라 백엔드(8000)와 MinIO(9000)를 각각
+# 내보낼 수 없다. 그런데 생성된 2D 이미지는 MinIO 가 직접 서빙하므로, 백엔드만
+# 열면 클라이언트가 이미지를 받지 못한다.
+# (실측: image_url 이 http://localhost:9000/... 로 내려와 Quest 에서 열리지 않음)
+#
+# 그래서 이 프록시가 둘을 한 주소로 합치고, ngrok 은 여기만 바라본다.
+# TLS 는 ngrok 이 처리하므로 여기서는 평문 :80 으로 받는다.
+:80 {
+	# 생성된 2D 이미지는 MinIO 가 준다.
+	# 코드가 만드는 URL 이 {MINIO_PUBLIC_BASE_URL}/{버킷}/{파일} 형태라
+	# 버킷 경로만 MinIO 로 넘기면 된다.
+	@assets path /nodexr-2d-assets/*
+	reverse_proxy @assets minio:9000
+
+	# 나머지는 전부 FastAPI. WebSocket 업그레이드도 이 한 줄로 통과한다.
+	reverse_proxy backend:8000
+}
