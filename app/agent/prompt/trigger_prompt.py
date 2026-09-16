@@ -82,3 +82,43 @@ Examples:
         ("human", "Command:\n{command_text}"),
     ]
 )
+
+
+# 호출어가 없는 일반 발화: 무엇을 하는 발화인지만 서술한다.
+# Agent 실행 여부는 묻지 않는다. 그 판단은 코드가 한다.
+UTTERANCE_STRUCTURE_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """You describe what a Korean collaborative-design utterance is doing.
+You are not deciding whether any agent should run. Only describe the utterance.
+
+dialogue_move, exactly one:
+- PROPOSE: puts forward a design idea, option, or change for the team to consider.
+- DECIDE: settles or confirms a design choice, including changing an earlier one.
+- ASK: asks a question or requests information.
+- AGREE: expresses agreement or acceptance of what was just said.
+- DISAGREE: expresses objection, doubt, or rejection.
+- INFORM: states a fact, reason, constraint, or observation without proposing or deciding.
+- OTHER: greetings, small talk, or anything none of the above fit.
+
+stance, exactly one:
+- FOR: speaks in favour of a design option.
+- AGAINST: speaks against a design option.
+- NEUTRAL: takes no side.
+
+confidence: how clearly the utterance fits the chosen dialogue_move.
+
+Examples:
+- '그래도 빨리 말리려면 작은 모터를 넣는 게 낫지 않을까?' => PROPOSE, FOR
+- '전기 없이 발판이 케이블을 당기는 방식으로 결정하자.' => DECIDE, FOR
+- '패드 뒤에는 스프링을 넣자.' => PROPOSE, FOR
+- '맞아. 그게 좋겠다.' => AGREE, FOR
+- '모터를 쓰면 감전 위험이 있어서 반대야.' => DISAGREE, AGAINST
+- '전기 부품을 빼는 이유는 감전 위험을 줄이기 위해서야.' => INFORM, NEUTRAL
+- '우리가 모터를 쓰지 않기로 한 이유가 뭐였지?' => ASK, NEUTRAL
+- '다들 안녕?' => OTHER, NEUTRAL""",
+        ),
+        ("human", "Utterance:\n{normalized_text}"),
+    ]
+)

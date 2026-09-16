@@ -7,6 +7,7 @@ from typing_extensions import TypedDict
 from app.agent.schema.realtime_agent_schema import (
     AgentResponse,
     AlertDraft,
+    AnnotationDraft,
     FactLinkRecord,
     FactRecord,
     GenerationRequest,
@@ -28,6 +29,7 @@ class RealtimeAgentState(TypedDict):
     is_agent_command: bool | None
     command_text: str
     triggers: TriggerResult
+    annotation: AnnotationDraft | None
     guard_result: GuardResult
     guard_passed: bool
     retrieved_facts: Annotated[list[FactRecord], operator.add]

@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy import (
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Text,
@@ -20,7 +21,9 @@ from app.model.enum import (
     DesignFactStatus,
     DesignFactType,
     DesignFactUtteranceLinkRole,
+    DialogueMove,
     MemoryStatus,
+    Stance,
     SemanticMemoryType,
     TopicStatus,
     UtteranceState,
@@ -80,6 +83,66 @@ class Utterance(Base):
         Index("ix_utterances_state_room", "state", "room_id"),
         Index("ix_utterances_created_at", "created_at"),
     )
+
+class UtteranceAnnotation(Base):
+    """발화의 구조적 서술. 어떤 행위인지와 찬반 입장만 담는다.
+
+    Agent를 실행할지 말지는 이 값을 보고 코드가 정한다. LLM 판단을 그대로
+    게이트로 쓰지 않기 위한 계층이다.
+    """
+
+    __tablename__ = "utterance_annotations"
+
+    utterance_annotation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    utterance_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("utterances.utterance_id"),
+        nullable=False,
+    )
+
+    dialogue_move: Mapped[DialogueMove] = mapped_column(
+        Enum(DialogueMove, name="dialogue_move"),
+        nullable=False,
+    )
+
+    stance: Mapped[Stance] = mapped_column(
+        Enum(Stance, name="stance"),
+        nullable=False,
+        default=Stance.NEUTRAL,
+    )
+
+    # 어떤 fact에 대한 입장인지 알 수 있을 때만 채운다.
+    target_fact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("design_facts.design_fact_id"),
+    )
+
+    # 분석용으로만 저장한다. 게이팅 조건으로 쓰지 않는다.
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    model_version: Mapped[str] = mapped_column(String(100), nullable=False)
+
+    created_at: Mapped[object] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "utterance_id",
+            "model_version",
+            name="uq_utterance_annotations_utterance_model",
+        ),
+        Index("ix_utterance_annotations_utterance_id", "utterance_id"),
+        Index("ix_utterance_annotations_dialogue_move", "dialogue_move"),
+        Index("ix_utterance_annotations_target_fact_id", "target_fact_id"),
+    )
+
 
 class NodeUtteranceLink(Base):
     __tablename__ = "node_utterance_links"

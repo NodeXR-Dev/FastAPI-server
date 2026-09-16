@@ -5,11 +5,14 @@ from app.agent.prompt.trigger_prompt import (
     AGENT_COMMAND_PROMPT,
     GUARD_TRIGGER_PROMPT,
     TRIGGER_PROMPT,
+    UTTERANCE_STRUCTURE_PROMPT,
 )
 from app.agent.schema.realtime_agent_schema import (
     AgentCommandResult,
+    AnnotationDraft,
     GuardTriggerResult,
     TriggerResult,
+    UtteranceStructureResult,
 )
 from app.agent.state.realtime_agent_state import RealtimeAgentState
 from app.core.config import settings
@@ -41,6 +44,10 @@ class TriggerRouterNode:
         self.command_chain = AGENT_COMMAND_PROMPT | model.with_structured_output(
             AgentCommandResult,
         )
+        self.structure_chain = (
+            UTTERANCE_STRUCTURE_PROMPT
+            | model.with_structured_output(UtteranceStructureResult)
+        )
 
     async def classify_triggers(self, state: RealtimeAgentState) -> dict:
         if not settings.AGENT_WAKE_WORD_REQUIRED:
@@ -56,6 +63,13 @@ class TriggerRouterNode:
 
         if is_command:
             return await self._classify_command(state, command_text=command_text)
+
+        if settings.AGENT_GUARD_GATING_MODE == "annotation":
+            # 라우팅 단계에서 이미 구조를 받았으면 같은 발화를 다시 보내지 않는다.
+            existing = state.get("annotation")
+            if existing is not None:
+                return self._triggers_from_annotation(state, existing)
+            return await self._classify_structure(state)
 
         return await self._classify_guard(state)
 
@@ -94,6 +108,75 @@ class TriggerRouterNode:
             command_text,
         )
         return {"triggers": self._to_triggers(command)}
+
+    @staticmethod
+    def _gate_memory_guard(dialogue_move: str) -> bool:
+        # confidence는 게이팅에 쓰지 않는다. 실측에서 항상 1.0에 가까워
+        # 게이트로서 정보량이 없었다.
+        return dialogue_move in settings.AGENT_GUARD_GATING_MOVES
+
+    def _triggers_from_annotation(
+        self,
+        state: RealtimeAgentState,
+        annotation: AnnotationDraft,
+    ) -> dict:
+        memory_guard = self._gate_memory_guard(annotation.dialogue_move)
+        logger.info(
+            "[agent_trigger_classified] room_id=%s | utterance_id=%s "
+            "| mode=annotation_reused | dialogue_move=%s | memory_guard=%s",
+            state["room_id"],
+            state["utterance_id"],
+            annotation.dialogue_move,
+            memory_guard,
+        )
+        return {"triggers": TriggerResult(memory_guard=memory_guard)}
+
+    async def _classify_structure(self, state: RealtimeAgentState) -> dict:
+        """발화를 서술만 시키고 guard 실행 여부는 코드가 정한다."""
+        try:
+            result = await self.structure_chain.ainvoke(
+                {"normalized_text": state["normalized_text"]},
+            )
+            structure = (
+                result
+                if isinstance(result, UtteranceStructureResult)
+                else UtteranceStructureResult.model_validate(result)
+            )
+        except Exception as error:
+            logger.exception(
+                "[agent_structure_classification_failed] room_id=%s "
+                "| utterance_id=%s | error=%s",
+                state["room_id"],
+                state["utterance_id"],
+                str(error),
+            )
+            return {
+                "triggers": TriggerResult(),
+                "errors": ["structure_classification_failed"],
+            }
+
+        # confidence는 저장만 하고 게이팅에 쓰지 않는다. LLM self-report는
+        # 실측에서 항상 1.0에 가까워 게이트로서 정보량이 없었다.
+        memory_guard = self._gate_memory_guard(structure.dialogue_move)
+
+        logger.info(
+            "[agent_trigger_classified] room_id=%s | utterance_id=%s "
+            "| mode=annotation | dialogue_move=%s | stance=%s | memory_guard=%s",
+            state["room_id"],
+            state["utterance_id"],
+            structure.dialogue_move,
+            structure.stance,
+            memory_guard,
+        )
+        return {
+            "triggers": TriggerResult(memory_guard=memory_guard),
+            "annotation": AnnotationDraft(
+                dialogue_move=structure.dialogue_move,
+                stance=structure.stance,
+                confidence=structure.confidence,
+                model_version=settings.AGENT_ANNOTATION_SCHEMA_VERSION,
+            ),
+        }
 
     async def _classify_guard(self, state: RealtimeAgentState) -> dict:
         try:

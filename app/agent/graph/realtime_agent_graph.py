@@ -8,6 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from app.agent.node.trigger_router_node import TriggerRouterNode
 from app.agent.schema.realtime_agent_schema import (
     AgentResponse,
+    AnnotationDraft,
     GenerationRequest,
     GuardResult,
     TriggerResult,
@@ -91,6 +92,7 @@ class RealtimeAgentGraph:
         topic_id: UUID,
         is_agent_command: bool | None = None,
         command_text: str = "",
+        annotation: AnnotationDraft | None = None,
     ) -> RealtimeAgentState:
         initial_state: RealtimeAgentState = {
             "room_id": room_id,
@@ -103,6 +105,7 @@ class RealtimeAgentGraph:
             "is_agent_command": is_agent_command,
             "command_text": command_text,
             "triggers": TriggerResult(),
+            "annotation": annotation,
             "guard_result": GuardResult(),
             "guard_passed": False,
             "retrieved_facts": [],
@@ -228,6 +231,7 @@ class RealtimeAgentGraph:
                 alerts=state["alerts"],
                 responses=state["responses"],
                 generation_requests=state["generation_requests"],
+                annotation=state.get("annotation"),
             )
             return {"ws_events": events}
         except Exception as error:

@@ -22,6 +22,24 @@ class UtteranceState(str, enum.Enum):
     SKIP = "SKIP"
 
 
+class DialogueMove(str, enum.Enum):
+    """발화가 대화에서 수행하는 행위. 판단이 아니라 서술이다."""
+
+    PROPOSE = "PROPOSE"
+    DECIDE = "DECIDE"
+    ASK = "ASK"
+    AGREE = "AGREE"
+    DISAGREE = "DISAGREE"
+    INFORM = "INFORM"
+    OTHER = "OTHER"
+
+
+class Stance(str, enum.Enum):
+    FOR = "FOR"
+    AGAINST = "AGAINST"
+    NEUTRAL = "NEUTRAL"
+
+
 class SemanticMemoryType(str, enum.Enum):
     SUMMARY = "SUMMARY"
     DECISION = "DECISION"

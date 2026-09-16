@@ -28,6 +28,49 @@ class GuardTriggerResult(BaseModel):
     memory_guard: bool = False
 
 
+DialogueMoveLabel = Literal[
+    "PROPOSE",
+    "DECIDE",
+    "ASK",
+    "AGREE",
+    "DISAGREE",
+    "INFORM",
+    "OTHER",
+]
+
+StanceLabel = Literal["FOR", "AGAINST", "NEUTRAL"]
+
+
+class UtteranceStructureResult(BaseModel):
+    """발화가 무엇을 하는 발화인지에 대한 서술.
+
+    Agent 실행 여부를 묻지 않는다. 그 판단은 코드가 한다.
+    """
+
+    dialogue_move: DialogueMoveLabel = "OTHER"
+    stance: StanceLabel = "NEUTRAL"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class UtteranceTopicAndStructureResult(BaseModel):
+    """발화 1건의 topic 배정과 구조 서술을 한 번에 받는다."""
+
+    topic_number: int = Field(default=0, ge=0)
+    new_topic_summary: str = ""
+    dialogue_move: DialogueMoveLabel = "OTHER"
+    stance: StanceLabel = "NEUTRAL"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class AnnotationDraft(BaseModel):
+    """저장 대기 중인 발화 주석."""
+
+    dialogue_move: DialogueMoveLabel
+    stance: StanceLabel
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    model_version: str
+
+
 class TriggerResult(BaseModel):
     memory_guard: bool = False
     rationale_recall: bool = False

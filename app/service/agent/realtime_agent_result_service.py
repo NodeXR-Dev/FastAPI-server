@@ -8,9 +8,10 @@ from langsmith import trace
 from app.agent.schema.realtime_agent_schema import (
     AgentResponse,
     AlertDraft,
+    AnnotationDraft,
     GenerationRequest,
 )
-from app.model.enum import AlertType
+from app.model.enum import AlertType, DialogueMove, Stance
 from app.repository.agent_repository import AgentRepository
 from app.schema.agent.ws_event_agent_payload import AgentGuidePayload
 from app.schema.websocket.ws_event import AgentGuideWSEvent
@@ -43,6 +44,7 @@ class RealtimeAgentResultService:
         alerts: list[AlertDraft],
         responses: list[AgentResponse],
         generation_requests: list[GenerationRequest],
+        annotation: AnnotationDraft | None = None,
     ) -> list[dict]:
         with trace(
             name="BuildAgentGuideEvents",
@@ -60,6 +62,13 @@ class RealtimeAgentResultService:
             tags=["realtime-agent", "agent-guide"],
             metadata={"room_id": str(room_id), "topic_id": str(topic_id)},
         ) as guide_trace:
+            if annotation is not None:
+                await asyncio.to_thread(
+                    self._persist_annotation,
+                    utterance_id=utterance_id,
+                    annotation=annotation,
+                )
+
             persisted_alerts = await asyncio.to_thread(
                 self._persist_alerts,
                 room_id=room_id,
@@ -135,6 +144,34 @@ class RealtimeAgentResultService:
                     }
                 )
             return events
+
+    def _persist_annotation(
+        self,
+        *,
+        utterance_id: UUID,
+        annotation: AnnotationDraft,
+    ) -> None:
+        """주석 저장 실패가 Agent 응답을 막지 않도록 분리해서 처리한다."""
+        db = self.session_factory()
+        try:
+            self.agent_repository.upsert_annotation(
+                db,
+                utterance_id=utterance_id,
+                dialogue_move=DialogueMove(annotation.dialogue_move),
+                stance=Stance(annotation.stance),
+                confidence=annotation.confidence,
+                model_version=annotation.model_version,
+            )
+            db.commit()
+        except Exception as error:
+            db.rollback()
+            logger.exception(
+                "[agent_annotation_persist_failed] utterance_id=%s | error=%s",
+                utterance_id,
+                str(error),
+            )
+        finally:
+            db.close()
 
     def _persist_alerts(
         self,
