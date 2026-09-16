@@ -49,6 +49,20 @@ class TopicRepository:
         similarity = max(-1.0, min(1.0, 1.0 - float(cosine_distance)))
         return TopicMatch(topic=topic, similarity=similarity)
 
+    def find_active_topics(
+        self,
+        db: Session,
+        *,
+        room_id: UUID,
+    ) -> list[Topic]:
+        """LLM에게 후보로 제시할 topic 목록. 생성 순서를 번호로 쓴다."""
+        return list(
+            db.query(Topic)
+            .filter(Topic.room_id == room_id, Topic.status == TopicStatus.ACTIVE)
+            .order_by(Topic.created_at.asc(), Topic.topic_id.asc())
+            .all()
+        )
+
     def create(
         self,
         db: Session,

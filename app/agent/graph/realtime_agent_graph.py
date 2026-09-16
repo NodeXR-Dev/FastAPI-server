@@ -1,3 +1,4 @@
+from datetime import datetime
 from functools import lru_cache
 from typing import Any
 from uuid import UUID
@@ -8,6 +9,7 @@ from langgraph.graph import END, START, StateGraph
 from app.agent.node.trigger_router_node import TriggerRouterNode
 from app.agent.schema.realtime_agent_schema import (
     AgentResponse,
+    AnnotationDraft,
     GenerationRequest,
     GuardResult,
     TriggerResult,
@@ -89,6 +91,10 @@ class RealtimeAgentGraph:
         normalized_text: str,
         embedding: list[float],
         topic_id: UUID,
+        is_agent_command: bool | None = None,
+        command_text: str = "",
+        annotation: AnnotationDraft | None = None,
+        created_at: datetime | None = None,
     ) -> RealtimeAgentState:
         initial_state: RealtimeAgentState = {
             "room_id": room_id,
@@ -98,7 +104,11 @@ class RealtimeAgentGraph:
             "normalized_text": normalized_text,
             "embedding": embedding,
             "topic_id": topic_id,
+            "is_agent_command": is_agent_command,
+            "command_text": command_text,
             "triggers": TriggerResult(),
+            "annotation": annotation,
+            "created_at": created_at,
             "guard_result": GuardResult(),
             "guard_passed": False,
             "retrieved_facts": [],
@@ -224,6 +234,12 @@ class RealtimeAgentGraph:
                 alerts=state["alerts"],
                 responses=state["responses"],
                 generation_requests=state["generation_requests"],
+                annotation=state.get("annotation"),
+                current_utterance_text=state["original_text"],
+                current_utterance_created_at=state.get("created_at"),
+                retrieved_facts=state["retrieved_facts"],
+                retrieved_memories=state["retrieved_memories"],
+                source_utterances=state["source_utterances"],
             )
             return {"ws_events": events}
         except Exception as error:

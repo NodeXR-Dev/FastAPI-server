@@ -11,6 +11,7 @@ from app.agent.schema.reflection_batch_schema import (
     BatchAnalysisResult,
 )
 from app.agent.state.reflection_batch_state import ReflectionBatchState
+from app.core.config import settings
 from app.core.logger import get_logger
 from app.service.agent.reflection_batch_service import (
     InvalidFactRelationshipError,
@@ -36,6 +37,7 @@ class ReflectionBatchGraph:
         builder.add_node("load_batch_data", self.load_batch_data)
         builder.add_node("retrieve_related_context", self.retrieve_related_context)
         builder.add_node("build_batch_context", self.build_batch_context)
+        builder.add_node("resegment_topics", self.resegment_topics)
         builder.add_node("analyze_batch", self.analyze_batch)
         builder.add_node("validate_analysis", self.validate_analysis)
         builder.add_node("deduplicate_facts", self.deduplicate_facts)
@@ -46,7 +48,8 @@ class ReflectionBatchGraph:
         builder.add_edge(START, "load_batch_data")
         builder.add_conditional_edges("load_batch_data", self.route_after_load)
         builder.add_edge("retrieve_related_context", "build_batch_context")
-        builder.add_edge("build_batch_context", "analyze_batch")
+        builder.add_edge("build_batch_context", "resegment_topics")
+        builder.add_edge("resegment_topics", "analyze_batch")
         builder.add_edge("analyze_batch", "validate_analysis")
         builder.add_edge("validate_analysis", "deduplicate_facts")
         builder.add_edge("deduplicate_facts", "semantic_memory_generation")
@@ -134,6 +137,37 @@ class ReflectionBatchGraph:
                 existing_facts=state["existing_facts"],
                 semantic_memories=state["semantic_memories"],
             )
+        }
+
+    async def resegment_topics(self, state: ReflectionBatchState) -> dict:
+        """전체 배치를 보고 이번 배치 발화의 topic 배정을 교정한다.
+
+        실시간 라우팅은 뒤에 올 발화를 보지 못한 채 순차로 정한다. 주제 경계는
+        본래 사후 판단이라 여기서 다시 긋는다. 실패해도 배치를 세우지 않는다.
+        """
+        if not settings.BATCH_TOPIC_RESEGMENT_ENABLED:
+            return {}
+        context = self._require_context(state)
+        try:
+            result = await self.node.resegment_topics(context)
+            updated, moved = self.service.apply_topic_resegmentation(
+                context=context,
+                result=result,
+            )
+        except Exception as error:
+            logger.exception(
+                "[reflection_resegment_failed] room_id=%s | batch_run_id=%s | error=%s",
+                state["room_id"],
+                state["batch_run_id"],
+                str(error),
+            )
+            return {}
+        if moved == 0:
+            return {"batch_context": updated}
+        return {
+            "batch_context": updated,
+            "topics": updated.topics,
+            "topic_ids": [item.topic_id for item in updated.topics],
         }
 
     async def analyze_batch(self, state: ReflectionBatchState) -> dict:

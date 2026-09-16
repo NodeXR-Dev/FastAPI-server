@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -13,6 +14,8 @@ from app.agent.graph.reflection_batch_graph import ReflectionBatchGraph
 from app.agent.schema.reflection_batch_schema import (
     BatchAnalysisResult,
     BatchContext,
+    BatchMemoryRecord,
+    BatchTopicRecord,
     BatchUtteranceRecord,
     FactCandidate,
     FactDedupDecision,
@@ -24,6 +27,8 @@ from app.agent.schema.reflection_batch_schema import (
     ReflectionPersistenceResult,
     SemanticMemoryProposal,
     SemanticMemoryProposalBundle,
+    TopicResegmentAssignment,
+    TopicResegmentResult,
     TopicSummaryProposal,
     TopicSummaryProposalBundle,
 )
@@ -32,6 +37,7 @@ from app.model.enum import (
     DesignFactStatus,
     DesignFactType,
     SemanticMemoryType,
+    TopicStatus,
     UtteranceState,
 )
 from app.repository.graph_repository import GraphRepository
@@ -360,7 +366,7 @@ def test_batch_analyzer_returns_structured_facts_links_and_provenance():
     assert validated.facts[0].source_utterance_ids == [proposal_source]
 
 
-def test_validation_rejects_fact_without_batch_provenance():
+def test_validation_drops_fact_without_batch_provenance():
     topic_id = uuid4()
     context = _context(
         utterances=[
@@ -393,8 +399,10 @@ def test_validation_rejects_fact_without_batch_provenance():
         embedding_service=Mock(),
     )
 
-    with pytest.raises(ValueError, match="outside the batch"):
-        service.validate_analysis(context=context, analysis=analysis)
+    # 출처가 배치 안에 하나도 없으면 그 fact만 버리고 배치는 계속한다.
+    validated = service.validate_analysis(context=context, analysis=analysis)
+
+    assert validated.facts == []
 
 
 def test_invalid_fact_relationship_triggers_one_repair_and_accepts_correction():
@@ -845,3 +853,529 @@ def test_reflection_graph_runs_without_langsmith_export_when_tracing_is_disabled
 
     assert result["persistence_result"] == persistence
     service.persist_reflection.assert_called_once()
+
+
+def test_memory_proposals_are_dropped_instead_of_failing_the_batch():
+    topic_id = uuid4()
+    other_topic_id = uuid4()
+    utterance_id = uuid4()
+    service = ReflectionBatchService(session_factory=Mock())
+
+    decision = FactCandidate(
+        temp_id="decision-1",
+        topic_id=topic_id,
+        fact_type=DesignFactType.DECISION,
+        content="모터는 쓰지 않기로 한다.",
+        source_utterance_ids=[utterance_id],
+        confidence=0.9,
+    )
+    proposal = FactCandidate(
+        temp_id="proposal-1",
+        topic_id=topic_id,
+        fact_type=DesignFactType.PROPOSAL,
+        content="송풍기를 넣는다.",
+        source_utterance_ids=[utterance_id],
+        confidence=0.9,
+    )
+    prepared = PreparedReflection(
+        facts=[decision, proposal],
+        changed_topic_ids=[topic_id],
+    )
+    context = BatchContext(room_id=uuid4())
+
+    def ref(temp_id):
+        return FactReference(reference_type="CANDIDATE", reference_id=temp_id)
+
+    grounded = SemanticMemoryProposal(
+        topic_id=topic_id,
+        memory_type=SemanticMemoryType.DECISION,
+        content="모터를 쓰지 않기로 결정했다.",
+        source_fact_refs=[ref("decision-1")],
+    )
+    # CONFLICT 메모리인데 근거가 PROPOSAL뿐이라 규칙에 어긋난다.
+    ungrounded = SemanticMemoryProposal(
+        topic_id=topic_id,
+        memory_type=SemanticMemoryType.CONFLICT,
+        content="송풍기 도입을 두고 충돌이 있었다.",
+        source_fact_refs=[ref("proposal-1")],
+    )
+    unchanged_topic = SemanticMemoryProposal(
+        topic_id=other_topic_id,
+        memory_type=SemanticMemoryType.SUMMARY,
+        content="이번 batch에서 바뀌지 않은 topic 요약",
+        source_fact_refs=[ref("decision-1")],
+    )
+    unknown_fact = SemanticMemoryProposal(
+        topic_id=topic_id,
+        memory_type=SemanticMemoryType.RATIONALE,
+        content="존재하지 않는 fact를 근거로 든 메모리",
+        source_fact_refs=[ref("does-not-exist")],
+    )
+
+    accepted = service.validate_memory_updates(
+        context=context,
+        prepared=prepared,
+        proposals=[grounded, ungrounded, unchanged_topic, unknown_fact],
+    )
+
+    # 어긋난 제안만 버리고, 정상 제안과 나머지 batch는 살린다.
+    assert accepted == [grounded]
+
+
+def test_duplicate_memory_proposal_for_same_topic_and_type_is_dropped():
+    topic_id = uuid4()
+    service = ReflectionBatchService(session_factory=Mock())
+    candidate = FactCandidate(
+        temp_id="constraint-1",
+        topic_id=topic_id,
+        fact_type=DesignFactType.CONSTRAINT,
+        content="전기 부품을 쓰지 않는다.",
+        source_utterance_ids=[uuid4()],
+        confidence=0.9,
+    )
+    prepared = PreparedReflection(facts=[candidate], changed_topic_ids=[topic_id])
+
+    def proposal(content):
+        return SemanticMemoryProposal(
+            topic_id=topic_id,
+            memory_type=SemanticMemoryType.CONSTRAINT,
+            content=content,
+            source_fact_refs=[
+                FactReference(reference_type="CANDIDATE", reference_id="constraint-1")
+            ],
+        )
+
+    accepted = service.validate_memory_updates(
+        context=BatchContext(room_id=uuid4()),
+        prepared=prepared,
+        proposals=[proposal("첫 번째"), proposal("두 번째")],
+    )
+
+    assert [item.content for item in accepted] == ["첫 번째"]
+
+
+def test_memory_generation_marks_replaceable_existing_memories():
+    """덮어쓰기 대상 메모리를 LLM 입력에 명시해 병합을 유도한다."""
+    changed_topic = uuid4()
+    other_topic = uuid4()
+    captured: dict[str, str] = {}
+
+    class CapturingLLM(SchemaFakeLLM):
+        def with_structured_output(self, schema):
+            def _run(prompt):
+                captured["text"] = prompt.to_string()
+                return self.responses[schema]
+
+            return RunnableLambda(_run)
+
+    node = ReflectionBatchNode(
+        llm=CapturingLLM(
+            {SemanticMemoryProposalBundle: SemanticMemoryProposalBundle()},
+        )
+    )
+    context = BatchContext(
+        room_id=uuid4(),
+        semantic_memories=[
+            BatchMemoryRecord(
+                semantic_memory_id=uuid4(),
+                topic_id=changed_topic,
+                memory_type=SemanticMemoryType.SUMMARY,
+                content="기존 요약: 우산 물기 제거기를 만들기로 했다.",
+            ),
+            BatchMemoryRecord(
+                semantic_memory_id=uuid4(),
+                topic_id=other_topic,
+                memory_type=SemanticMemoryType.SUMMARY,
+                content="다른 토픽 요약.",
+            ),
+        ],
+    )
+
+    asyncio.run(
+        node.generate_memories(
+            PreparedReflection(changed_topic_ids=[changed_topic]),
+            context,
+        )
+    )
+
+    payload = json.loads(captured["text"].split("Prepared reflection:\n", 1)[1])
+    flags = {
+        item["topic_id"]: item["will_be_replaced"]
+        for item in payload["current_memories"]
+    }
+    assert flags[str(changed_topic)] is True
+    assert flags[str(other_topic)] is False
+    assert "기존 요약: 우산 물기 제거기를 만들기로 했다." in captured["text"]
+    assert "REPLACES" in captured["text"]
+
+
+def test_resegmentation_moves_utterances_and_never_touches_existing_topics():
+    """배치가 발화 소속만 다시 정한다. 기존 topic은 합치지도 이름을 바꾸지도 않는다."""
+    room_id = uuid4()
+    topic_a, topic_b = uuid4(), uuid4()
+    moved_utterance, stayed_utterance = uuid4(), uuid4()
+
+    context = BatchContext(
+        room_id=room_id,
+        utterances=[
+            BatchUtteranceRecord(
+                utterance_id=moved_utterance,
+                user_id=uuid4(),
+                topic_id=topic_a,
+                normalized_text="지붕을 씌우는 건 어때?",
+            ),
+            BatchUtteranceRecord(
+                utterance_id=stayed_utterance,
+                user_id=uuid4(),
+                topic_id=topic_b,
+                normalized_text="자물쇠 고리를 굵게 하자.",
+            ),
+        ],
+        topics=[
+            BatchTopicRecord(topic_id=topic_a, summary="위치", status=TopicStatus.ACTIVE),
+            BatchTopicRecord(topic_id=topic_b, summary="잠금", status=TopicStatus.ACTIVE),
+        ],
+    )
+
+    service = _reflection_service()
+    service.session_factory = Mock(return_value=Mock())
+    service.utterance_repository = Mock()
+    service.topic_repository = Mock()
+
+    updated, moved = service.apply_topic_resegmentation(
+        context=context,
+        result=TopicResegmentResult(
+            assignments=[
+                # 1번(위치)에 있던 발화를 2번(잠금)으로 옮긴다.
+                TopicResegmentAssignment(
+                    utterance_id=moved_utterance,
+                    topic_number=2,
+                ),
+                TopicResegmentAssignment(
+                    utterance_id=stayed_utterance,
+                    topic_number=2,
+                ),
+            ]
+        ),
+    )
+
+    assert moved == 1
+    assert updated.utterances[0].topic_id == topic_b
+    assert updated.utterances[1].topic_id == topic_b
+    # 기존 topic 2개가 그대로 남아 있고 새로 만들지 않았다.
+    assert [item.topic_id for item in updated.topics] == [topic_a, topic_b]
+    service.topic_repository.create.assert_not_called()
+    service.utterance_repository.update.assert_called_once()
+
+
+def test_resegmentation_groups_new_topic_utterances_into_one_topic():
+    """새 topic으로 간 발화들이 같은 group 라벨이면 topic 하나만 만든다."""
+    room_id = uuid4()
+    existing_topic = uuid4()
+    created_topic = uuid4()
+    first, second = uuid4(), uuid4()
+
+    context = BatchContext(
+        room_id=room_id,
+        utterances=[
+            BatchUtteranceRecord(
+                utterance_id=first,
+                user_id=uuid4(),
+                topic_id=existing_topic,
+                normalized_text="자물쇠는 어떻게 걸지 정하자.",
+            ),
+            BatchUtteranceRecord(
+                utterance_id=second,
+                user_id=uuid4(),
+                topic_id=existing_topic,
+                normalized_text="고리를 위쪽에 하나 더 달자.",
+            ),
+        ],
+        topics=[
+            BatchTopicRecord(
+                topic_id=existing_topic, summary="지붕", status=TopicStatus.ACTIVE
+            ),
+        ],
+    )
+
+    service = _reflection_service()
+    db = Mock()
+    db.get.return_value = SimpleNamespace(embedding=[0.1, 0.2, 0.3])
+    service.session_factory = Mock(return_value=db)
+    service.utterance_repository = Mock()
+    service.topic_repository = Mock()
+    service.topic_repository.create.return_value = SimpleNamespace(
+        topic_id=created_topic,
+        summary="잠금 방식",
+    )
+
+    updated, moved = service.apply_topic_resegmentation(
+        context=context,
+        result=TopicResegmentResult(
+            assignments=[
+                TopicResegmentAssignment(
+                    utterance_id=first,
+                    topic_number=0,
+                    new_topic_group="잠금",
+                    new_topic_summary="잠금 방식",
+                ),
+                TopicResegmentAssignment(
+                    utterance_id=second,
+                    topic_number=0,
+                    new_topic_group="잠금",
+                ),
+            ]
+        ),
+    )
+
+    assert moved == 2
+    assert service.topic_repository.create.call_count == 1
+    assert [item.topic_id for item in updated.utterances] == [
+        created_topic,
+        created_topic,
+    ]
+    assert [item.topic_id for item in updated.topics] == [existing_topic, created_topic]
+
+
+def test_resegmentation_skips_unknown_utterance_ids():
+    """배치에 없는 utterance_id를 돌려줘도 배치 전체를 세우지 않는다."""
+    room_id = uuid4()
+    topic_id = uuid4()
+    known = uuid4()
+
+    context = BatchContext(
+        room_id=room_id,
+        utterances=[
+            BatchUtteranceRecord(
+                utterance_id=known,
+                user_id=uuid4(),
+                topic_id=topic_id,
+                normalized_text="지붕을 씌우자.",
+            )
+        ],
+        topics=[
+            BatchTopicRecord(
+                topic_id=topic_id, summary="지붕", status=TopicStatus.ACTIVE
+            )
+        ],
+    )
+
+    service = _reflection_service()
+    service.session_factory = Mock(return_value=Mock())
+    service.utterance_repository = Mock()
+    service.topic_repository = Mock()
+
+    updated, moved = service.apply_topic_resegmentation(
+        context=context,
+        result=TopicResegmentResult(
+            assignments=[
+                TopicResegmentAssignment(utterance_id=uuid4(), topic_number=1),
+                TopicResegmentAssignment(utterance_id=known, topic_number=1),
+            ]
+        ),
+    )
+
+    assert moved == 0
+    assert updated.utterances[0].topic_id == topic_id
+
+
+def _validation_context(*records):
+    return _context(utterances=list(records))
+
+
+def _utterance(topic_id, text="발화"):
+    return BatchUtteranceRecord(
+        utterance_id=uuid4(),
+        user_id=uuid4(),
+        topic_id=topic_id,
+        normalized_text=text,
+    )
+
+
+def test_validation_repairs_fact_topic_from_its_source_utterance():
+    """topic_id가 틀려도 정답이 출처 발화에 있으므로 버리지 않고 맞춘다."""
+    right_topic, wrong_topic = uuid4(), uuid4()
+    source = _utterance(right_topic, "예산은 오만 원을 넘기면 안 돼.")
+    analysis = BatchAnalysisResult(
+        facts=[
+            FactCandidate(
+                temp_id="constraint-1",
+                topic_id=wrong_topic,
+                fact_type=DesignFactType.CONSTRAINT,
+                content="전체 예산은 오만 원 이하이다.",
+                source_utterance_ids=[source.utterance_id],
+                confidence=0.95,
+            )
+        ]
+    )
+
+    validated = _reflection_service().validate_analysis(
+        context=_validation_context(source),
+        analysis=analysis,
+    )
+
+    assert len(validated.facts) == 1
+    assert validated.facts[0].topic_id == right_topic
+
+
+def test_validation_drops_only_the_fact_whose_sources_span_topics():
+    """출처가 여러 topic에 걸치면 옳은 값이 없다. 그 fact만 버린다."""
+    topic_a, topic_b = uuid4(), uuid4()
+    source_a = _utterance(topic_a, "태양광으로 가자.")
+    source_b = _utterance(topic_b, "예산은 오만 원이야.")
+    good = _utterance(topic_a, "패널은 울타리에 고정하자.")
+
+    analysis = BatchAnalysisResult(
+        facts=[
+            FactCandidate(
+                temp_id="spanning",
+                topic_id=topic_a,
+                fact_type=DesignFactType.DECISION,
+                content="예산 안에서 태양광을 쓴다.",
+                source_utterance_ids=[source_a.utterance_id, source_b.utterance_id],
+                confidence=0.9,
+            ),
+            FactCandidate(
+                temp_id="clean",
+                topic_id=topic_a,
+                fact_type=DesignFactType.PROPOSAL,
+                content="패널을 울타리 위에 고정한다.",
+                source_utterance_ids=[good.utterance_id],
+                confidence=0.9,
+            ),
+        ]
+    )
+
+    validated = _reflection_service().validate_analysis(
+        context=_validation_context(source_a, source_b, good),
+        analysis=analysis,
+    )
+
+    assert [item.temp_id for item in validated.facts] == ["clean"]
+
+
+def test_validation_strips_out_of_batch_sources_but_keeps_the_fact():
+    """배치 밖 발화 id만 떼어내고, 유효한 출처가 남으면 fact를 살린다."""
+    topic_id = uuid4()
+    source = _utterance(topic_id, "중력식 물탱크로 정하자.")
+    analysis = BatchAnalysisResult(
+        facts=[
+            FactCandidate(
+                temp_id="decision-1",
+                topic_id=topic_id,
+                fact_type=DesignFactType.DECISION,
+                content="중력식 물탱크를 쓴다.",
+                source_utterance_ids=[source.utterance_id, uuid4()],
+                confidence=0.9,
+            )
+        ]
+    )
+
+    validated = _reflection_service().validate_analysis(
+        context=_validation_context(source),
+        analysis=analysis,
+    )
+
+    assert len(validated.facts) == 1
+    assert validated.facts[0].source_utterance_ids == [source.utterance_id]
+
+
+def test_validation_keeps_first_of_duplicate_temp_ids():
+    topic_id = uuid4()
+    source = _utterance(topic_id)
+    analysis = BatchAnalysisResult(
+        facts=[
+            FactCandidate(
+                temp_id="dup",
+                topic_id=topic_id,
+                fact_type=DesignFactType.PROPOSAL,
+                content="먼저 온 fact",
+                source_utterance_ids=[source.utterance_id],
+                confidence=0.9,
+            ),
+            FactCandidate(
+                temp_id="dup",
+                topic_id=topic_id,
+                fact_type=DesignFactType.PROPOSAL,
+                content="나중에 온 fact",
+                source_utterance_ids=[source.utterance_id],
+                confidence=0.9,
+            ),
+        ]
+    )
+
+    validated = _reflection_service().validate_analysis(
+        context=_validation_context(source),
+        analysis=analysis,
+    )
+
+    assert [item.content for item in validated.facts] == ["먼저 온 fact"]
+
+
+def test_validation_drops_self_link_without_failing_the_batch():
+    topic_id = uuid4()
+    source = _utterance(topic_id)
+    reference = FactReference(reference_type="CANDIDATE", reference_id="fact-1")
+    analysis = BatchAnalysisResult(
+        facts=[
+            FactCandidate(
+                temp_id="fact-1",
+                topic_id=topic_id,
+                fact_type=DesignFactType.PROPOSAL,
+                content="유일한 fact",
+                source_utterance_ids=[source.utterance_id],
+                confidence=0.9,
+            )
+        ],
+        links=[
+            FactLinkCandidate(
+                source=reference,
+                target=reference,
+                link_type=DesignFactLinkType.SUPPORTS,
+                confidence=0.9,
+            )
+        ],
+    )
+
+    validated = _reflection_service().validate_analysis(
+        context=_validation_context(source),
+        analysis=analysis,
+    )
+
+    assert len(validated.facts) == 1
+    assert validated.links == []
+
+
+def test_validation_drops_link_to_unknown_fact_without_failing_the_batch():
+    topic_id = uuid4()
+    source = _utterance(topic_id)
+    analysis = BatchAnalysisResult(
+        facts=[
+            FactCandidate(
+                temp_id="fact-1",
+                topic_id=topic_id,
+                fact_type=DesignFactType.RATIONALE,
+                content="근거 fact",
+                source_utterance_ids=[source.utterance_id],
+                confidence=0.9,
+            )
+        ],
+        links=[
+            FactLinkCandidate(
+                source=FactReference(reference_type="CANDIDATE", reference_id="fact-1"),
+                target=FactReference(
+                    reference_type="EXISTING", reference_id=str(uuid4())
+                ),
+                link_type=DesignFactLinkType.RATIONALE_OF,
+                confidence=0.9,
+            )
+        ],
+    )
+
+    validated = _reflection_service().validate_analysis(
+        context=_validation_context(source),
+        analysis=analysis,
+    )
+
+    assert len(validated.facts) == 1
+    assert validated.links == []

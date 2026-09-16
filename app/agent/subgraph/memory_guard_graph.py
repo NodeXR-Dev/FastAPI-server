@@ -61,6 +61,22 @@ class MemoryGuardGraph:
                 topic_id=state["topic_id"],
                 embedding=state["embedding"],
             )
+            logger.info(
+                "[memory_guard_retrieved] room_id=%s | utterance_id=%s "
+                "| fact_count=%s | top_similarity=%s | llm_skipped=%s",
+                state["room_id"],
+                state["utterance_id"],
+                len(facts),
+                max(
+                    (
+                        fact.similarity
+                        for fact in facts
+                        if fact.similarity is not None
+                    ),
+                    default=None,
+                ),
+                not facts,
+            )
             return {"retrieved_facts": facts}
         except Exception as error:
             logger.exception(
@@ -112,19 +128,30 @@ class MemoryGuardGraph:
 
     def confidence_check(self, state: RealtimeAgentState) -> dict:
         result = state["guard_result"]
-        return {
-            "guard_passed": bool(
-                result.violated
-                and result.violation_type != "NONE"
-                and result.related_fact_ids
-                and result.confidence >= self.alert_threshold
-            )
-        }
+        guard_passed = bool(
+            result.violated
+            and result.violation_type != "NONE"
+            and result.related_fact_ids
+            and result.confidence >= self.alert_threshold
+        )
+        logger.info(
+            "[memory_guard_decision] room_id=%s | utterance_id=%s | violated=%s "
+            "| violation_type=%s | confidence=%s | related_fact_count=%s "
+            "| alert_created=%s",
+            state["room_id"],
+            state["utterance_id"],
+            result.violated,
+            result.violation_type,
+            result.confidence,
+            len(result.related_fact_ids),
+            guard_passed,
+        )
+        return {"guard_passed": guard_passed}
 
     def create_alert(self, state: RealtimeAgentState) -> dict:
         result = state["guard_result"]
         alert_type = (
-            "DECISION_VIOLATION"
+            "DECISION_CONFLICT"
             if result.violation_type == "DECISION"
             else "CONSTRAINT_VIOLATION"
         )

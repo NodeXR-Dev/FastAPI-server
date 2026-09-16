@@ -43,6 +43,8 @@ class BatchFactRecord(BaseModel):
     fact_type: DesignFactType
     status: DesignFactStatus
     content: str
+    target_scope: str | None = None
+    design_dimension: str | None = None
 
 
 class BatchMemoryRecord(BaseModel):
@@ -61,6 +63,20 @@ class BatchContext(BaseModel):
     semantic_memories: list[BatchMemoryRecord] = Field(default_factory=list)
 
 
+class TopicResegmentAssignment(BaseModel):
+    """배치 발화 1건의 재배정 결과."""
+
+    utterance_id: UUID
+    topic_number: int = Field(default=0, ge=0)
+    # topic_number가 0일 때, 같은 새 topic으로 묶일 발화끼리 공유하는 라벨.
+    new_topic_group: str = ""
+    new_topic_summary: str = ""
+
+
+class TopicResegmentResult(BaseModel):
+    assignments: list[TopicResegmentAssignment] = Field(default_factory=list)
+
+
 class FactCandidate(BaseModel):
     temp_id: str = Field(min_length=1, max_length=80)
     topic_id: UUID
@@ -69,6 +85,9 @@ class FactCandidate(BaseModel):
     source_utterance_ids: list[UUID] = Field(min_length=1)
     confidence: float = Field(ge=0.0, le=1.0)
     related_existing_fact_ids: list[UUID] = Field(default_factory=list)
+    # AGENT_GUIDE evidence에 그대로 실린다. 모르면 비워 둔다.
+    target_scope: str | None = Field(default=None, max_length=120)
+    design_dimension: str | None = Field(default=None, max_length=120)
 
     @field_validator("temp_id", "content")
     @classmethod

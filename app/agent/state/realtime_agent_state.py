@@ -1,4 +1,5 @@
 import operator
+from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -7,6 +8,7 @@ from typing_extensions import TypedDict
 from app.agent.schema.realtime_agent_schema import (
     AgentResponse,
     AlertDraft,
+    AnnotationDraft,
     FactLinkRecord,
     FactRecord,
     GenerationRequest,
@@ -25,7 +27,11 @@ class RealtimeAgentState(TypedDict):
     normalized_text: str
     embedding: list[float]
     topic_id: UUID
+    is_agent_command: bool | None
+    command_text: str
     triggers: TriggerResult
+    annotation: AnnotationDraft | None
+    created_at: datetime | None
     guard_result: GuardResult
     guard_passed: bool
     retrieved_facts: Annotated[list[FactRecord], operator.add]

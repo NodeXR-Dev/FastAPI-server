@@ -88,7 +88,19 @@ class ConflictRecallGraph:
             return {"errors": ["conflict_argument_retrieval_failed"]}
 
     async def generate_response(self, state: RealtimeAgentState) -> dict:
-        if not state["retrieved_facts"]:
+        has_evidence = bool(state["retrieved_facts"])
+        logger.info(
+            "[conflict_recall_evidence] room_id=%s | utterance_id=%s "
+            "| fact_count=%s | link_count=%s | source_utterance_count=%s "
+            "| has_evidence=%s",
+            state["room_id"],
+            state["utterance_id"],
+            len(state["retrieved_facts"]),
+            len(state["fact_links"]),
+            len(state["source_utterances"]),
+            has_evidence,
+        )
+        if not has_evidence:
             return {
                 "responses": [
                     AgentResponse(

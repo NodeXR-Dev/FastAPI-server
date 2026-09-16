@@ -5,6 +5,7 @@ from functools import lru_cache
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
+from langsmith import trace
 
 from app.agent.graph.reflection_batch_graph import (
     ReflectionBatchGraph,
@@ -39,6 +40,11 @@ class ReflectionScheduler:
             if interval_seconds is None
             else interval_seconds
         )
+        self.max_consecutive_failures = (
+            settings.REFLECTION_BATCH_MAX_CONSECUTIVE_FAILURES
+        )
+        self._failure_counts: dict[UUID, int] = {}
+        self._retry_after: dict[UUID, float] = {}
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task | None = None
 
@@ -94,6 +100,8 @@ class ReflectionScheduler:
     async def run_once(self) -> None:
         room_ids = await asyncio.to_thread(self.service.find_pending_room_ids)
         for room_id in room_ids:
+            if self._is_backing_off(room_id):
+                continue
             await self._run_room(room_id)
 
     async def _run_room(self, room_id: UUID) -> None:
@@ -118,12 +126,35 @@ class ReflectionScheduler:
                 room_id,
                 batch_run_id,
             )
-            state = await self.graph.ainvoke(
-                room_id=room_id,
-                batch_run_id=batch_run_id,
-            )
-            result = state.get("persistence_result")
-            analysis = state.get("analysis_result")
+            with trace(
+                name="ReflectionBatchRun",
+                run_type="chain",
+                inputs={
+                    "room_id": str(room_id),
+                    "batch_run_id": str(batch_run_id),
+                },
+                tags=["reflection-batch", "cold-path"],
+                metadata={"room_id": str(room_id), "batch_run_id": str(batch_run_id)},
+            ) as batch_trace:
+                state = await self.graph.ainvoke(
+                    room_id=room_id,
+                    batch_run_id=batch_run_id,
+                )
+                result = state.get("persistence_result")
+                analysis = state.get("analysis_result")
+                if batch_trace is not None:
+                    batch_trace.end(
+                        outputs={
+                            "utterance_count": len(state.get("utterances", [])),
+                            "graph_event_count": len(state.get("graph_events", [])),
+                            "topic_count": len(state.get("topic_ids", [])),
+                            "retrieved_fact_count": len(state.get("existing_facts", [])),
+                            "retrieved_memory_count": len(state.get("semantic_memories", [])),
+                            "generated_fact_count": len(analysis.facts) if analysis is not None else 0,
+                            "generated_link_count": len(analysis.links) if analysis is not None else 0,
+                            "persistence_result": result.model_dump() if result is not None else None,
+                        }
+                    )
             elapsed_ms = (time.perf_counter() - started_at) * 1000
             logger.info(
                 "[reflection_batch_succeeded] room_id=%s | batch_run_id=%s "
@@ -143,6 +174,7 @@ class ReflectionScheduler:
                 result.model_dump() if result is not None else None,
                 elapsed_ms,
             )
+            self._clear_failure(room_id)
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -154,6 +186,7 @@ class ReflectionScheduler:
                 elapsed_ms,
                 str(error),
             )
+            self._record_failure(room_id)
         finally:
             if acquired:
                 try:
@@ -169,6 +202,50 @@ class ReflectionScheduler:
                         str(unlock_error),
                     )
             lock_db.close()
+
+    def _is_backing_off(self, room_id: UUID) -> bool:
+        retry_after = self._retry_after.get(room_id)
+        if retry_after is None:
+            return False
+        remaining_seconds = retry_after - time.monotonic()
+        if remaining_seconds <= 0:
+            return False
+        logger.info(
+            "[reflection_batch_skipped_backoff] room_id=%s | failure_count=%s "
+            "| retry_in_seconds=%.1f",
+            room_id,
+            self._failure_counts.get(room_id, 0),
+            remaining_seconds,
+        )
+        return True
+
+    def _record_failure(self, room_id: UUID) -> None:
+        failure_count = self._failure_counts.get(room_id, 0) + 1
+        self._failure_counts[room_id] = failure_count
+        if failure_count < self.max_consecutive_failures:
+            return
+        exponent = min(failure_count - self.max_consecutive_failures + 1, 16)
+        backoff_cycles = min(
+            float(2**exponent),
+            settings.REFLECTION_BATCH_MAX_BACKOFF_CYCLES,
+        )
+        delay_seconds = self.interval_seconds * backoff_cycles
+        self._retry_after[room_id] = time.monotonic() + delay_seconds
+        logger.warning(
+            "[reflection_batch_backoff_applied] room_id=%s | failure_count=%s "
+            "| delay_seconds=%.1f",
+            room_id,
+            failure_count,
+            delay_seconds,
+        )
+
+    def _clear_failure(self, room_id: UUID) -> None:
+        if self._failure_counts.pop(room_id, None) is not None:
+            logger.info(
+                "[reflection_batch_backoff_cleared] room_id=%s",
+                room_id,
+            )
+        self._retry_after.pop(room_id, None)
 
 
 @lru_cache(maxsize=1)

@@ -12,12 +12,17 @@ from app.agent.graph.realtime_agent_graph import RealtimeAgentGraph
 from app.agent.node.trigger_router_node import TriggerRouterNode
 from app.agent.schema.realtime_agent_schema import (
     AgentResponse,
+    AnnotationDraft,
     FactLinkRecord,
     FactRecord,
     GuardResult,
+    GuardTriggerResult,
+    MemoryRecord,
     SourceUtteranceRecord,
     TriggerResult,
+    UtteranceStructureResult,
 )
+from app.model.enum import DialogueMove, Stance
 from app.agent.subgraph.conflict_recall_graph import ConflictRecallGraph
 from app.agent.subgraph.memory_guard_graph import MemoryGuardGraph
 from app.agent.subgraph.rationale_recall_graph import RationaleRecallGraph
@@ -153,7 +158,12 @@ def test_topic_creates_new_topic_when_similarity_is_below_threshold():
         ),
     ],
 )
-def test_trigger_router_supports_no_single_and_multi_trigger(text, expected):
+def test_trigger_router_supports_no_single_and_multi_trigger(text, expected, monkeypatch):
+    # 호출어 게이팅을 끈 legacy 경로에서는 기존 다중 라벨 분류가 그대로 동작한다.
+    from app.agent.node import trigger_router_node as router_module
+
+    monkeypatch.setattr(router_module.settings, "AGENT_WAKE_WORD_REQUIRED", False)
+
     def classify(prompt):
         prompt_text = prompt.messages[-1].content
         if "알루미늄" in prompt_text:
@@ -493,8 +503,9 @@ def test_asset_enqueue_failure_does_not_drop_recall_response():
         )
     )
 
+    # Recall 응답의 guide_type은 클라이언트 스펙 이름을 따른다.
     assert [event["payload"]["guide_type"] for event in events] == [
-        "RATIONALE_RECALL",
+        "DECISION_RATIONALE_RECALL",
         "ASSET_GENERATION",
     ]
     assert events[0]["payload"]["message"] == "저장된 근거입니다."
@@ -512,7 +523,7 @@ def test_websocket_sends_all_prepared_events_only_to_request_socket(monkeypatch)
     ]
 
     asyncio.run(
-        ws_room_event.send_server_events_to_requester(
+        ws_room_event.send_server_events(
             websocket=websocket,
             server_events=events,
         )
@@ -527,6 +538,310 @@ def test_websocket_sends_all_prepared_events_only_to_request_socket(monkeypatch)
         call.args[0] is websocket
         for call in manager.send_personal_message.await_args_list
     )
+
+
+def test_wake_word_service_detects_variants_and_strips_call():
+    from app.service.utterance.wake_word_service import WakeWordService
+
+    service = WakeWordService()
+
+    match = service.detect("노드베어, 왜 알루미늄으로 정했지?")
+    assert match.matched
+    assert match.command_text == "왜 알루미늄으로 정했지?"
+
+    # STT가 띄어쓰기나 표기를 흘려도 인식한다.
+    assert service.detect("노드 베어야 이미지 만들어줘").command_text == "이미지 만들어줘"
+    assert service.detect("노드배어 반대 의견 뭐였어?").matched
+
+    # 문장 중간에 불러도 인식하고 나머지 문장을 유지한다.
+    middle = service.detect("아 맞다 노드베어 아까 반대 의견 뭐였지?")
+    assert middle.matched
+    assert middle.command_text == "아 맞다 아까 반대 의견 뭐였지?"
+
+    # 호출어가 없으면 명령이 아니다.
+    assert not service.detect("알루미늄으로 하자").matched
+    assert not service.detect("왜 알루미늄으로 정했지?").matched
+
+
+class _FakeRouterModel:
+    """with_structured_output만 흉내내는 최소 모델."""
+
+    def __init__(self, *, command_type="RATIONALE_RECALL", memory_guard=True):
+        self.command_type = command_type
+        self.memory_guard = memory_guard
+
+    def with_structured_output(self, schema):
+        from app.agent.schema.realtime_agent_schema import (
+            AgentCommandResult,
+            GuardTriggerResult,
+        )
+
+        if schema is AgentCommandResult:
+            return RunnableLambda(
+                lambda _prompt: AgentCommandResult(command_type=self.command_type)
+            )
+        if schema is GuardTriggerResult:
+            return RunnableLambda(
+                lambda _prompt: GuardTriggerResult(memory_guard=self.memory_guard)
+            )
+        return RunnableLambda(lambda _prompt: TriggerResult())
+
+
+def test_trigger_router_routes_wake_word_command_to_single_intent(monkeypatch):
+    from app.agent.node import trigger_router_node as module
+
+    monkeypatch.setattr(module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    node = module.TriggerRouterNode(
+        llm=_FakeRouterModel(command_type="GENERATE_2D"),
+    )
+    state = make_state(normalized_text="노드베어, 콘셉트 이미지를 만들어줘")
+
+    triggers = asyncio.run(node.classify_triggers(state))["triggers"]
+
+    assert triggers.asset_generation is True
+    assert triggers.asset_type == "IMAGE_2D"
+    # 명령 발화에서는 제약 검사를 돌리지 않는다.
+    assert triggers.memory_guard is False
+    assert triggers.rationale_recall is False
+
+
+def test_trigger_router_only_checks_guard_without_wake_word(monkeypatch):
+    from app.agent.node import trigger_router_node as module
+
+    monkeypatch.setattr(module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    node = module.TriggerRouterNode(
+        llm=_FakeRouterModel(command_type="GENERATE_2D", memory_guard=True),
+    )
+    # 호출어 없이 생성을 요청해도 Asset 경로로 가지 않는다.
+    state = make_state(normalized_text="이걸 이미지로 만들어줘")
+
+    triggers = asyncio.run(node.classify_triggers(state))["triggers"]
+
+    assert triggers.memory_guard is True
+    assert triggers.asset_generation is False
+    assert triggers.rationale_recall is False
+    assert triggers.conflict_recall is False
+
+
+def test_agent_command_maps_to_expected_triggers():
+    from app.agent.node.trigger_router_node import TriggerRouterNode
+    from app.agent.schema.realtime_agent_schema import AgentCommandResult
+
+    asset_id = uuid4()
+    cases = {
+        "RATIONALE_RECALL": ("rationale_recall", "NONE"),
+        "CONFLICT_RECALL": ("conflict_recall", "NONE"),
+        "GENERATE_2D": ("asset_generation", "IMAGE_2D"),
+        "GENERATE_3D": ("asset_generation", "MODEL_3D"),
+    }
+    for command_type, (flag, asset_type) in cases.items():
+        triggers = TriggerRouterNode._to_triggers(
+            AgentCommandResult(command_type=command_type, source_asset_id=asset_id)
+        )
+        assert getattr(triggers, flag) is True
+        assert triggers.asset_type == asset_type
+        assert triggers.memory_guard is False
+
+    none_triggers = TriggerRouterNode._to_triggers(
+        AgentCommandResult(command_type="NONE")
+    )
+    assert none_triggers.asset_generation is False
+    assert none_triggers.rationale_recall is False
+    # 3D가 아닌 명령에는 source_asset_id를 넘기지 않는다.
+    assert (
+        TriggerRouterNode._to_triggers(
+            AgentCommandResult(command_type="GENERATE_2D", source_asset_id=asset_id)
+        ).source_asset_id
+        is None
+    )
+
+
+def test_agent_command_utterance_is_stored_as_skip(monkeypatch):
+    from app.model.enum import UtteranceState
+    from app.service.utterance import auto_utterance_service as module
+
+    monkeypatch.setattr(module, "trace", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    utterance_id = uuid4()
+    topic_id = uuid4()
+    room_repository = Mock()
+    room_repository.find_room_by_id.return_value = SimpleNamespace(is_active=True)
+    room_repository.find_joined_member_by_user_id.return_value = SimpleNamespace()
+    utterance_repository = Mock()
+    utterance_repository.create.return_value = SimpleNamespace(
+        utterance_id=utterance_id,
+    )
+    graph = Mock()
+    graph.ainvoke = AsyncMock(return_value={"ws_events": [], "errors": []})
+    service = module.AutoUtteranceService(
+        Mock(),
+        text_preprocess_service=Mock(
+            utterance_preprocess=Mock(
+                return_value="노드베어, 왜 알루미늄으로 정했지?"
+            )
+        ),
+        embedding_service=Mock(embed_text=Mock(return_value=[0.1, 0.2])),
+        topic_routing_service=Mock(route_topic=Mock(return_value=topic_id)),
+        utterance_repository=utterance_repository,
+        room_repository=room_repository,
+        realtime_agent_graph=graph,
+    )
+
+    asyncio.run(
+        service.handle_auto_utterance(
+            room_id=uuid4(),
+            user_id=uuid4(),
+            payload={"utterance": "노드베어, 왜 알루미늄으로 정했지?"},
+        )
+    )
+
+    # 명령 발화는 설계 지식으로 구조화되면 안 되므로 SKIP으로 저장한다.
+    assert utterance_repository.create.call_args.kwargs["state"] is UtteranceState.SKIP
+    graph_kwargs = graph.ainvoke.await_args.kwargs
+    assert graph_kwargs["is_agent_command"] is True
+    assert graph_kwargs["command_text"] == "왜 알루미늄으로 정했지?"
+
+
+def test_noise_filter_keeps_short_but_meaningful_utterances():
+    from app.service.utterance.noise_filter_service import (
+        DROP,
+        FULL_PROCESS,
+        STORE_ONLY,
+        NoiseFilterService,
+    )
+
+    service = NoiseFilterService()
+
+    assert service.classify(normalized_text="음") == DROP
+    assert service.classify(normalized_text="ㅎㅎ") == DROP
+    assert service.classify(normalized_text="응") == STORE_ONLY
+    assert service.classify(normalized_text="네, 좋아요.") == FULL_PROCESS
+    # 짧지만 설계 의미가 있는 발화는 절대 버리지 않는다.
+    for text in ("반대", "동의", "철로", "알루미늄", "싫어"):
+        assert service.classify(normalized_text=text) == FULL_PROCESS
+    # filler로 시작해도 내용이 붙으면 전체 처리한다.
+    assert service.classify(normalized_text="응 그걸로 하자") == FULL_PROCESS
+    # 직전 발화와 동일하면 재처리하지 않는다.
+    assert (
+        service.classify(normalized_text="모터를 빼자", previous_text="모터를 빼자.")
+        == STORE_ONLY
+    )
+
+
+def test_async_dispatch_pushes_agent_events_without_blocking_response(monkeypatch):
+    from app.service.utterance import auto_utterance_service as module
+
+    room_id = uuid4()
+    user_id = uuid4()
+    graph = Mock()
+    graph.ainvoke = AsyncMock(
+        return_value={
+            "ws_events": [{"event_type": "AGENT_GUIDE"}],
+            "errors": [],
+        }
+    )
+    ws_manager = Mock()
+    ws_manager.send_to_user = AsyncMock(return_value=True)
+    ws_manager.broadcast = AsyncMock(return_value=1)
+    monkeypatch.setattr(module.settings, "ROOM_EVENT_BROADCAST_ENABLED", True)
+    service = module.AutoUtteranceService(
+        Mock(),
+        realtime_agent_graph=graph,
+        ws_manager=ws_manager,
+    )
+
+    asyncio.run(
+        service._run_agent_and_push(
+            room_id=room_id,
+            user_id=user_id,
+            utterance_id=uuid4(),
+            original_text="원문",
+            normalized_text="원문",
+            embedding=[0.0] * 768,
+            topic_id=uuid4(),
+        )
+    )
+
+    assert graph.ainvoke.await_count == 1
+    assert ws_manager.send_to_user.await_args.kwargs["user_id"] == user_id
+    assert ws_manager.broadcast.await_args.kwargs["exclude_user_id"] == user_id
+
+
+def test_async_dispatch_failure_does_not_propagate(monkeypatch):
+    from app.service.utterance import auto_utterance_service as module
+
+    graph = Mock()
+    graph.ainvoke = AsyncMock(side_effect=RuntimeError("llm down"))
+    ws_manager = Mock()
+    ws_manager.send_to_user = AsyncMock()
+    service = module.AutoUtteranceService(
+        Mock(),
+        realtime_agent_graph=graph,
+        ws_manager=ws_manager,
+    )
+
+    asyncio.run(
+        service._run_agent_and_push(
+            room_id=uuid4(),
+            user_id=uuid4(),
+            utterance_id=uuid4(),
+            original_text="원문",
+            normalized_text="원문",
+            embedding=[0.0] * 768,
+            topic_id=uuid4(),
+        )
+    )
+
+    assert ws_manager.send_to_user.await_count == 0
+
+
+def test_websocket_broadcasts_to_other_participants_when_enabled(monkeypatch):
+    room_id = uuid4()
+    manager = Mock()
+    manager.send_personal_message = AsyncMock()
+    manager.broadcast = AsyncMock(return_value=1)
+    monkeypatch.setattr(ws_room_event, "room_ws_manager", manager)
+    monkeypatch.setattr(
+        ws_room_event.settings,
+        "ROOM_EVENT_BROADCAST_ENABLED",
+        True,
+    )
+    websocket = Mock()
+    events = [{"event_type": "UTTERANCE_CREATED", "room_id": str(room_id)}]
+
+    asyncio.run(
+        ws_room_event.send_server_events(
+            websocket=websocket,
+            server_events=events,
+        )
+    )
+
+    assert manager.send_personal_message.await_count == 1
+    assert manager.broadcast.await_count == 1
+    broadcast_kwargs = manager.broadcast.await_args.kwargs
+    assert broadcast_kwargs["room_id"] == room_id
+    assert broadcast_kwargs["exclude_websocket"] is websocket
+
+
+def test_websocket_skips_broadcast_when_room_id_is_invalid(monkeypatch):
+    manager = Mock()
+    manager.send_personal_message = AsyncMock()
+    manager.broadcast = AsyncMock()
+    monkeypatch.setattr(ws_room_event, "room_ws_manager", manager)
+    monkeypatch.setattr(
+        ws_room_event.settings,
+        "ROOM_EVENT_BROADCAST_ENABLED",
+        True,
+    )
+
+    asyncio.run(
+        ws_room_event.send_server_events(
+            websocket=Mock(),
+            server_events=[{"event_type": "AGENT_GUIDE", "room_id": "not-a-uuid"}],
+        )
+    )
+
+    assert manager.broadcast.await_count == 0
 
 
 def test_connection_manager_sends_to_matching_user_without_room_multicast():
@@ -561,3 +876,421 @@ def test_connection_manager_sends_to_matching_user_without_room_multicast():
     assert sent is True
     requester_socket.send_json.assert_awaited_once_with(message)
     other_socket.send_json.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "move,expected_guard",
+    [
+        ("PROPOSE", True),
+        ("DECIDE", True),
+        ("AGREE", False),
+        ("DISAGREE", False),
+        ("INFORM", False),
+        ("ASK", False),
+        ("OTHER", False),
+    ],
+)
+def test_annotation_mode_gates_memory_guard_by_dialogue_move(
+    move,
+    expected_guard,
+    monkeypatch,
+):
+    """annotation 모드에서 guard 실행은 LLM 판단이 아니라 코드 규칙이 정한다."""
+    from app.agent.node import trigger_router_node as router_module
+
+    monkeypatch.setattr(router_module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    monkeypatch.setattr(
+        router_module.settings, "AGENT_GUARD_GATING_MODE", "annotation"
+    )
+
+    node = TriggerRouterNode(
+        llm=StructuredFakeLLM(
+            lambda _prompt: UtteranceStructureResult(
+                dialogue_move=move,
+                stance="NEUTRAL",
+                # confidence가 낮아도 게이팅은 dialogue_move만 본다.
+                confidence=0.1,
+            )
+        )
+    )
+    state = make_state(normalized_text="패드 뒤에는 스프링을 넣자.")
+    state["is_agent_command"] = False
+
+    result = asyncio.run(node.classify_triggers(state))
+
+    assert result["triggers"].memory_guard is expected_guard
+    assert result["annotation"].dialogue_move == move
+    assert result["annotation"].model_version == "structure-v1"
+
+
+def test_annotation_mode_never_triggers_recall_or_generation(monkeypatch):
+    """호출어 없는 발화는 서술 결과와 무관하게 Recall/생성을 켜지 않는다."""
+    from app.agent.node import trigger_router_node as router_module
+
+    monkeypatch.setattr(router_module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    monkeypatch.setattr(
+        router_module.settings, "AGENT_GUARD_GATING_MODE", "annotation"
+    )
+
+    node = TriggerRouterNode(
+        llm=StructuredFakeLLM(
+            lambda _prompt: UtteranceStructureResult(dialogue_move="ASK")
+        )
+    )
+    state = make_state(normalized_text="왜 알루미늄으로 정했지?")
+    state["is_agent_command"] = False
+
+    triggers = asyncio.run(node.classify_triggers(state))["triggers"]
+
+    assert triggers.rationale_recall is False
+    assert triggers.conflict_recall is False
+    assert triggers.asset_generation is False
+
+
+def test_llm_mode_keeps_guard_prompt_and_writes_no_annotation(monkeypatch):
+    """기본 모드(llm)에서는 기존 경로 그대로이고 주석을 남기지 않는다."""
+    from app.agent.node import trigger_router_node as router_module
+
+    monkeypatch.setattr(router_module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    monkeypatch.setattr(router_module.settings, "AGENT_GUARD_GATING_MODE", "llm")
+
+    node = TriggerRouterNode(
+        llm=StructuredFakeLLM(lambda _prompt: GuardTriggerResult(memory_guard=True))
+    )
+    state = make_state(normalized_text="패드 뒤에는 스프링을 넣자.")
+    state["is_agent_command"] = False
+
+    result = asyncio.run(node.classify_triggers(state))
+
+    assert result["triggers"].memory_guard is True
+    assert "annotation" not in result
+
+
+def test_annotation_failure_degrades_to_no_trigger(monkeypatch):
+    """서술 LLM이 실패해도 발화 처리를 막지 않는다."""
+    from app.agent.node import trigger_router_node as router_module
+
+    monkeypatch.setattr(router_module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    monkeypatch.setattr(
+        router_module.settings, "AGENT_GUARD_GATING_MODE", "annotation"
+    )
+
+    def explode(_prompt):
+        raise RuntimeError("structure llm down")
+
+    node = TriggerRouterNode(llm=StructuredFakeLLM(explode))
+    state = make_state()
+    state["is_agent_command"] = False
+
+    result = asyncio.run(node.classify_triggers(state))
+
+    assert result["triggers"] == TriggerResult()
+    assert result["errors"] == ["structure_classification_failed"]
+    assert "annotation" not in result
+
+
+def test_annotation_is_persisted_once_per_utterance_and_schema_version():
+    """같은 발화를 다시 분석하면 행이 늘지 않고 갱신된다."""
+    from app.repository.agent_repository import AgentRepository
+
+    stored = []
+
+    class FakeQuery:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return stored[0] if stored else None
+
+    db = Mock()
+    db.query.return_value = FakeQuery()
+    db.add.side_effect = lambda entity: stored.append(entity)
+
+    repository = AgentRepository()
+    utterance_id = uuid4()
+    first = repository.upsert_annotation(
+        db,
+        utterance_id=utterance_id,
+        dialogue_move=DialogueMove.PROPOSE,
+        stance=Stance.FOR,
+        confidence=0.9,
+        model_version="structure-v1",
+    )
+    second = repository.upsert_annotation(
+        db,
+        utterance_id=utterance_id,
+        dialogue_move=DialogueMove.DECIDE,
+        stance=Stance.NEUTRAL,
+        confidence=0.4,
+        model_version="structure-v1",
+    )
+
+    assert first is second
+    assert db.add.call_count == 1
+    assert second.dialogue_move == DialogueMove.DECIDE
+    assert second.stance == Stance.NEUTRAL
+
+
+def test_llm_routing_result_is_reused_instead_of_second_structure_call(monkeypatch):
+    """라우팅에서 받은 구조 서술을 재사용해 같은 발화를 두 번 분류하지 않는다."""
+    from app.agent.node import trigger_router_node as router_module
+
+    monkeypatch.setattr(router_module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    monkeypatch.setattr(
+        router_module.settings, "AGENT_GUARD_GATING_MODE", "annotation"
+    )
+
+    calls = []
+
+    def explode(_prompt):
+        calls.append(1)
+        raise AssertionError("구조 LLM을 다시 부르면 안 된다")
+
+    node = TriggerRouterNode(llm=StructuredFakeLLM(explode))
+    state = make_state(normalized_text="패드 뒤에는 스프링을 넣자.")
+    state["is_agent_command"] = False
+    state["annotation"] = AnnotationDraft(
+        dialogue_move="PROPOSE",
+        stance="FOR",
+        confidence=0.9,
+        model_version="structure-v1",
+    )
+
+    result = asyncio.run(node.classify_triggers(state))
+
+    assert calls == []
+    assert result["triggers"].memory_guard is True
+
+
+def test_llm_topic_routing_falls_back_to_embedding_on_failure():
+    """topic 배정은 발화 저장의 전제라 LLM이 죽어도 발화를 잃지 않는다."""
+    from app.service.utterance.llm_topic_routing_service import (
+        LlmTopicRoutingService,
+    )
+
+    fallback_topic_id = uuid4()
+    fallback = Mock()
+    fallback.route_topic.return_value = fallback_topic_id
+
+    topic_repository = Mock()
+    topic_repository.find_active_topics.return_value = [
+        SimpleNamespace(topic_id=uuid4(), summary="기존 주제", centroid_embedding=None)
+    ]
+
+    def explode(_prompt):
+        raise RuntimeError("llm down")
+
+    service = LlmTopicRoutingService(
+        llm=StructuredFakeLLM(explode),
+        topic_repository=topic_repository,
+        utterance_repository=Mock(),
+        fallback_service=fallback,
+    )
+
+    outcome = asyncio.run(
+        service.route(
+            Mock(),
+            room_id=uuid4(),
+            utterance_id=uuid4(),
+            normalized_text="지붕을 씌우는 건 어때?",
+            embedding=[0.1, 0.2, 0.3],
+            room_locked=True,
+        )
+    )
+
+    assert outcome.topic_id == fallback_topic_id
+    assert outcome.annotation is None
+    assert outcome.route_kind == "embedding_fallback"
+    assert fallback.route_topic.call_count == 1
+
+
+def test_llm_topic_routing_creates_first_topic_without_calling_llm():
+    """topic이 하나도 없으면 물어볼 것이 없다."""
+    from app.service.utterance.llm_topic_routing_service import (
+        LlmTopicRoutingService,
+    )
+
+    new_topic_id = uuid4()
+    topic_repository = Mock()
+    topic_repository.find_active_topics.return_value = []
+    topic_repository.create.return_value = SimpleNamespace(topic_id=new_topic_id)
+
+    def explode(_prompt):
+        raise AssertionError("첫 topic에는 LLM을 부르지 않는다")
+
+    service = LlmTopicRoutingService(
+        llm=StructuredFakeLLM(explode),
+        topic_repository=topic_repository,
+        utterance_repository=Mock(),
+        fallback_service=Mock(),
+    )
+
+    outcome = asyncio.run(
+        service.route(
+            Mock(),
+            room_id=uuid4(),
+            utterance_id=uuid4(),
+            normalized_text="거치대 위치부터 정하자.",
+            embedding=[0.1, 0.2, 0.3],
+            room_locked=True,
+        )
+    )
+
+    assert outcome.topic_id == new_topic_id
+    assert outcome.route_kind == "first"
+
+
+def _guide_service():
+    service = RealtimeAgentResultService(
+        session_factory=Mock(),
+        agent_repository=Mock(),
+        asset_adapter=Mock(),
+    )
+    service._persist_alerts = Mock(return_value=[])
+    service._persist_annotation = Mock()
+    return service
+
+
+def test_agent_guide_evidence_follows_the_client_spec_shape():
+    """클라이언트 AGENT_GUIDE 스펙의 evidence 구조를 그대로 채운다."""
+    from datetime import datetime, timezone
+
+    fact_id, memory_id, utterance_id = uuid4(), uuid4(), uuid4()
+    created_at = datetime(2026, 9, 16, 4, 30, tzinfo=timezone.utc)
+    service = _guide_service()
+
+    events = asyncio.run(
+        service.persist_and_build_events(
+            room_id=uuid4(),
+            user_id=uuid4(),
+            utterance_id=uuid4(),
+            topic_id=uuid4(),
+            alerts=[],
+            responses=[
+                AgentResponse(
+                    response_type="RATIONALE_RECALL",
+                    message="콘센트를 쓰지 않기로 한 이유는 …",
+                    related_fact_ids=[fact_id],
+                    source_utterance_ids=[utterance_id],
+                )
+            ],
+            generation_requests=[],
+            current_utterance_text="왜 콘센트를 안 쓰기로 했지?",
+            current_utterance_created_at=created_at,
+            retrieved_facts=[
+                FactRecord(
+                    design_fact_id=fact_id,
+                    topic_id=uuid4(),
+                    fact_type="DECISION",
+                    status="ACTIVE",
+                    content="콘센트는 사용하지 않는다",
+                    target_scope="전원부",
+                    design_dimension="전원",
+                )
+            ],
+            retrieved_memories=[
+                MemoryRecord(
+                    semantic_memory_id=memory_id,
+                    topic_id=uuid4(),
+                    memory_type="DECISION",
+                    status="ACTIVE",
+                    content="전원은 태양광만 쓴다",
+                )
+            ],
+            source_utterances=[
+                SourceUtteranceRecord(
+                    utterance_id=utterance_id,
+                    design_fact_id=fact_id,
+                    link_role="SOURCE",
+                    original_text="텃밭에 콘센트가 하나도 없어.",
+                    user_id=uuid4(),
+                    created_at=created_at,
+                )
+            ],
+        )
+    )
+
+    evidence = events[0]["payload"]["evidence"]
+    assert set(evidence) == {
+        "current_utterance",
+        "related_utterances",
+        "related_facts",
+        "related_memories",
+    }
+    assert evidence["current_utterance"]["text"] == "왜 콘센트를 안 쓰기로 했지?"
+    assert evidence["current_utterance"]["created_at"] == created_at.isoformat()
+
+    fact = evidence["related_facts"][0]
+    assert set(fact) == {
+        "design_fact_id",
+        "fact_type",
+        "status",
+        "summary",
+        "target_scope",
+        "design_dimension",
+    }
+    assert fact["summary"] == "콘센트는 사용하지 않는다"
+    assert fact["target_scope"] == "전원부"
+
+    memory = evidence["related_memories"][0]
+    assert set(memory) == {"memory_id", "memory_type", "status", "summary"}
+    assert memory["memory_id"] == str(memory_id)
+
+    utterance = evidence["related_utterances"][0]
+    assert set(utterance) == {"utterance_id", "text", "user_id", "created_at"}
+    assert utterance["text"] == "텃밭에 콘센트가 하나도 없어."
+
+
+@pytest.mark.parametrize(
+    "response_type,fact_types,expected",
+    [
+        ("RATIONALE_RECALL", ["DECISION"], "DECISION_RATIONALE_RECALL"),
+        ("RATIONALE_RECALL", ["CONSTRAINT"], "CONSTRAINT_RATIONALE_RECALL"),
+        ("RATIONALE_RECALL", ["CONSTRAINT", "DECISION"], "DECISION_RATIONALE_RECALL"),
+        ("RATIONALE_RECALL", [], "DECISION_RATIONALE_RECALL"),
+        ("CONFLICT_RECALL", ["CONFLICT"], "CONFLICT_RATIONALE_RECALL"),
+        ("ASSET_GENERATION", [], "ASSET_GENERATION"),
+    ],
+)
+def test_recall_response_maps_to_spec_guide_type(response_type, fact_types, expected):
+    """Recall 응답은 근거 fact 종류에 따라 스펙 guide_type으로 옮겨진다."""
+    service = _guide_service()
+    cited = [
+        FactRecord(
+            design_fact_id=uuid4(),
+            fact_type=fact_type,
+            status="ACTIVE",
+            content="근거",
+        )
+        for fact_type in fact_types
+    ]
+
+    guide_type = service._response_guide_type(
+        AgentResponse(response_type=response_type, message="m"),
+        cited,
+    )
+
+    assert guide_type == expected
+
+
+def test_guard_alert_uses_spec_decision_conflict_name():
+    """Guard 경고의 guide_type은 스펙 이름(DECISION_CONFLICT)을 쓴다."""
+    from app.agent.subgraph.memory_guard_graph import MemoryGuardGraph
+
+    fact_id = uuid4()
+    graph = MemoryGuardGraph(
+        llm=StructuredFakeLLM(lambda _p: GuardResult()),
+        retrieval_service=Mock(),
+    )
+    state = make_state()
+    state["guard_result"] = GuardResult(
+        violated=True,
+        violation_type="DECISION",
+        related_fact_ids=[fact_id],
+        confidence=0.95,
+        reason="이전 결정과 충돌한다",
+    )
+
+    alerts = graph.create_alert(state)["alerts"]
+
+    assert alerts[0].alert_type == "DECISION_CONFLICT"
