@@ -12,12 +12,16 @@ from app.agent.graph.realtime_agent_graph import RealtimeAgentGraph
 from app.agent.node.trigger_router_node import TriggerRouterNode
 from app.agent.schema.realtime_agent_schema import (
     AgentResponse,
+    AnnotationDraft,
     FactLinkRecord,
     FactRecord,
     GuardResult,
+    GuardTriggerResult,
     SourceUtteranceRecord,
     TriggerResult,
+    UtteranceStructureResult,
 )
+from app.model.enum import DialogueMove, Stance
 from app.agent.subgraph.conflict_recall_graph import ConflictRecallGraph
 from app.agent.subgraph.memory_guard_graph import MemoryGuardGraph
 from app.agent.subgraph.rationale_recall_graph import RationaleRecallGraph
@@ -870,3 +874,265 @@ def test_connection_manager_sends_to_matching_user_without_room_multicast():
     assert sent is True
     requester_socket.send_json.assert_awaited_once_with(message)
     other_socket.send_json.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "move,expected_guard",
+    [
+        ("PROPOSE", True),
+        ("DECIDE", True),
+        ("AGREE", False),
+        ("DISAGREE", False),
+        ("INFORM", False),
+        ("ASK", False),
+        ("OTHER", False),
+    ],
+)
+def test_annotation_mode_gates_memory_guard_by_dialogue_move(
+    move,
+    expected_guard,
+    monkeypatch,
+):
+    """annotation 모드에서 guard 실행은 LLM 판단이 아니라 코드 규칙이 정한다."""
+    from app.agent.node import trigger_router_node as router_module
+
+    monkeypatch.setattr(router_module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    monkeypatch.setattr(
+        router_module.settings, "AGENT_GUARD_GATING_MODE", "annotation"
+    )
+
+    node = TriggerRouterNode(
+        llm=StructuredFakeLLM(
+            lambda _prompt: UtteranceStructureResult(
+                dialogue_move=move,
+                stance="NEUTRAL",
+                # confidence가 낮아도 게이팅은 dialogue_move만 본다.
+                confidence=0.1,
+            )
+        )
+    )
+    state = make_state(normalized_text="패드 뒤에는 스프링을 넣자.")
+    state["is_agent_command"] = False
+
+    result = asyncio.run(node.classify_triggers(state))
+
+    assert result["triggers"].memory_guard is expected_guard
+    assert result["annotation"].dialogue_move == move
+    assert result["annotation"].model_version == "structure-v1"
+
+
+def test_annotation_mode_never_triggers_recall_or_generation(monkeypatch):
+    """호출어 없는 발화는 서술 결과와 무관하게 Recall/생성을 켜지 않는다."""
+    from app.agent.node import trigger_router_node as router_module
+
+    monkeypatch.setattr(router_module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    monkeypatch.setattr(
+        router_module.settings, "AGENT_GUARD_GATING_MODE", "annotation"
+    )
+
+    node = TriggerRouterNode(
+        llm=StructuredFakeLLM(
+            lambda _prompt: UtteranceStructureResult(dialogue_move="ASK")
+        )
+    )
+    state = make_state(normalized_text="왜 알루미늄으로 정했지?")
+    state["is_agent_command"] = False
+
+    triggers = asyncio.run(node.classify_triggers(state))["triggers"]
+
+    assert triggers.rationale_recall is False
+    assert triggers.conflict_recall is False
+    assert triggers.asset_generation is False
+
+
+def test_llm_mode_keeps_guard_prompt_and_writes_no_annotation(monkeypatch):
+    """기본 모드(llm)에서는 기존 경로 그대로이고 주석을 남기지 않는다."""
+    from app.agent.node import trigger_router_node as router_module
+
+    monkeypatch.setattr(router_module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    monkeypatch.setattr(router_module.settings, "AGENT_GUARD_GATING_MODE", "llm")
+
+    node = TriggerRouterNode(
+        llm=StructuredFakeLLM(lambda _prompt: GuardTriggerResult(memory_guard=True))
+    )
+    state = make_state(normalized_text="패드 뒤에는 스프링을 넣자.")
+    state["is_agent_command"] = False
+
+    result = asyncio.run(node.classify_triggers(state))
+
+    assert result["triggers"].memory_guard is True
+    assert "annotation" not in result
+
+
+def test_annotation_failure_degrades_to_no_trigger(monkeypatch):
+    """서술 LLM이 실패해도 발화 처리를 막지 않는다."""
+    from app.agent.node import trigger_router_node as router_module
+
+    monkeypatch.setattr(router_module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    monkeypatch.setattr(
+        router_module.settings, "AGENT_GUARD_GATING_MODE", "annotation"
+    )
+
+    def explode(_prompt):
+        raise RuntimeError("structure llm down")
+
+    node = TriggerRouterNode(llm=StructuredFakeLLM(explode))
+    state = make_state()
+    state["is_agent_command"] = False
+
+    result = asyncio.run(node.classify_triggers(state))
+
+    assert result["triggers"] == TriggerResult()
+    assert result["errors"] == ["structure_classification_failed"]
+    assert "annotation" not in result
+
+
+def test_annotation_is_persisted_once_per_utterance_and_schema_version():
+    """같은 발화를 다시 분석하면 행이 늘지 않고 갱신된다."""
+    from app.repository.agent_repository import AgentRepository
+
+    stored = []
+
+    class FakeQuery:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return stored[0] if stored else None
+
+    db = Mock()
+    db.query.return_value = FakeQuery()
+    db.add.side_effect = lambda entity: stored.append(entity)
+
+    repository = AgentRepository()
+    utterance_id = uuid4()
+    first = repository.upsert_annotation(
+        db,
+        utterance_id=utterance_id,
+        dialogue_move=DialogueMove.PROPOSE,
+        stance=Stance.FOR,
+        confidence=0.9,
+        model_version="structure-v1",
+    )
+    second = repository.upsert_annotation(
+        db,
+        utterance_id=utterance_id,
+        dialogue_move=DialogueMove.DECIDE,
+        stance=Stance.NEUTRAL,
+        confidence=0.4,
+        model_version="structure-v1",
+    )
+
+    assert first is second
+    assert db.add.call_count == 1
+    assert second.dialogue_move == DialogueMove.DECIDE
+    assert second.stance == Stance.NEUTRAL
+
+
+def test_llm_routing_result_is_reused_instead_of_second_structure_call(monkeypatch):
+    """라우팅에서 받은 구조 서술을 재사용해 같은 발화를 두 번 분류하지 않는다."""
+    from app.agent.node import trigger_router_node as router_module
+
+    monkeypatch.setattr(router_module.settings, "AGENT_WAKE_WORD_REQUIRED", True)
+    monkeypatch.setattr(
+        router_module.settings, "AGENT_GUARD_GATING_MODE", "annotation"
+    )
+
+    calls = []
+
+    def explode(_prompt):
+        calls.append(1)
+        raise AssertionError("구조 LLM을 다시 부르면 안 된다")
+
+    node = TriggerRouterNode(llm=StructuredFakeLLM(explode))
+    state = make_state(normalized_text="패드 뒤에는 스프링을 넣자.")
+    state["is_agent_command"] = False
+    state["annotation"] = AnnotationDraft(
+        dialogue_move="PROPOSE",
+        stance="FOR",
+        confidence=0.9,
+        model_version="structure-v1",
+    )
+
+    result = asyncio.run(node.classify_triggers(state))
+
+    assert calls == []
+    assert result["triggers"].memory_guard is True
+
+
+def test_llm_topic_routing_falls_back_to_embedding_on_failure():
+    """topic 배정은 발화 저장의 전제라 LLM이 죽어도 발화를 잃지 않는다."""
+    from app.service.utterance.llm_topic_routing_service import (
+        LlmTopicRoutingService,
+    )
+
+    fallback_topic_id = uuid4()
+    fallback = Mock()
+    fallback.route_topic.return_value = fallback_topic_id
+
+    topic_repository = Mock()
+    topic_repository.find_active_topics.return_value = [
+        SimpleNamespace(topic_id=uuid4(), summary="기존 주제", centroid_embedding=None)
+    ]
+
+    def explode(_prompt):
+        raise RuntimeError("llm down")
+
+    service = LlmTopicRoutingService(
+        llm=StructuredFakeLLM(explode),
+        topic_repository=topic_repository,
+        utterance_repository=Mock(),
+        fallback_service=fallback,
+    )
+
+    outcome = asyncio.run(
+        service.route(
+            Mock(),
+            room_id=uuid4(),
+            utterance_id=uuid4(),
+            normalized_text="지붕을 씌우는 건 어때?",
+            embedding=[0.1, 0.2, 0.3],
+            room_locked=True,
+        )
+    )
+
+    assert outcome.topic_id == fallback_topic_id
+    assert outcome.annotation is None
+    assert outcome.route_kind == "embedding_fallback"
+    assert fallback.route_topic.call_count == 1
+
+
+def test_llm_topic_routing_creates_first_topic_without_calling_llm():
+    """topic이 하나도 없으면 물어볼 것이 없다."""
+    from app.service.utterance.llm_topic_routing_service import (
+        LlmTopicRoutingService,
+    )
+
+    new_topic_id = uuid4()
+    topic_repository = Mock()
+    topic_repository.find_active_topics.return_value = []
+    topic_repository.create.return_value = SimpleNamespace(topic_id=new_topic_id)
+
+    def explode(_prompt):
+        raise AssertionError("첫 topic에는 LLM을 부르지 않는다")
+
+    service = LlmTopicRoutingService(
+        llm=StructuredFakeLLM(explode),
+        topic_repository=topic_repository,
+        utterance_repository=Mock(),
+        fallback_service=Mock(),
+    )
+
+    outcome = asyncio.run(
+        service.route(
+            Mock(),
+            room_id=uuid4(),
+            utterance_id=uuid4(),
+            normalized_text="거치대 위치부터 정하자.",
+            embedding=[0.1, 0.2, 0.3],
+            room_locked=True,
+        )
+    )
+
+    assert outcome.topic_id == new_topic_id
+    assert outcome.route_kind == "first"
