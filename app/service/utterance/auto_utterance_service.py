@@ -5,6 +5,7 @@ from uuid import UUID
 from langsmith import trace
 from sqlalchemy.orm import Session
 
+from app.agent.schema.realtime_agent_schema import AnnotationDraft
 from app.agent.graph.realtime_agent_graph import (
     RealtimeAgentGraph,
     get_realtime_agent_graph,
@@ -25,6 +26,7 @@ from app.service.utterance.noise_filter_service import (
 )
 from app.service.utterance.text_preprocess_service import TextPreprocessService
 from app.service.utterance.topic_routing_service import TopicRoutingService
+from app.service.utterance.llm_topic_routing_service import LlmTopicRoutingService
 from app.service.utterance.wake_word_service import WakeWordService
 from app.service.websocket.connection_manager import (
     RoomConnectionManager,
@@ -50,6 +52,7 @@ class AutoUtteranceService:
         realtime_agent_graph: RealtimeAgentGraph | None = None,
         noise_filter_service: NoiseFilterService | None = None,
         wake_word_service: WakeWordService | None = None,
+        llm_topic_routing_service: LlmTopicRoutingService | None = None,
         ws_manager: RoomConnectionManager = room_ws_manager,
     ) -> None:
         self.db = db
@@ -63,7 +66,18 @@ class AutoUtteranceService:
         self.realtime_agent_graph = realtime_agent_graph or get_realtime_agent_graph()
         self.noise_filter_service = noise_filter_service or NoiseFilterService()
         self.wake_word_service = wake_word_service or WakeWordService()
+        self._llm_topic_routing_service = llm_topic_routing_service
         self.ws_manager = ws_manager
+
+    @property
+    def llm_topic_routing_service(self) -> LlmTopicRoutingService:
+        if self._llm_topic_routing_service is None:
+            self._llm_topic_routing_service = LlmTopicRoutingService(
+                topic_repository=self.topic_routing_service.topic_repository,
+                utterance_repository=self.utterance_repository,
+                fallback_service=self.topic_routing_service,
+            )
+        return self._llm_topic_routing_service
 
     async def handle_auto_utterance(
         self,
@@ -154,6 +168,7 @@ class AutoUtteranceService:
                         else UtteranceState.NOREFLECT
                     ),
                 )
+                annotation = None
                 with trace(
                     name="topic_routing",
                     run_type="retriever",
@@ -162,14 +177,28 @@ class AutoUtteranceService:
                         "utterance_id": str(utterance.utterance_id),
                     },
                 ):
-                    topic_id = self.topic_routing_service.route_topic(
-                        self.db,
-                        room_id=room_id,
-                        utterance_id=utterance.utterance_id,
-                        normalized_text=normalized_text,
-                        embedding=embedding,
-                        room_locked=True,
-                    )
+                    if settings.TOPIC_ROUTING_MODE == "llm":
+                        outcome = await self.llm_topic_routing_service.route(
+                            self.db,
+                            room_id=room_id,
+                            utterance_id=utterance.utterance_id,
+                            normalized_text=normalized_text,
+                            embedding=embedding,
+                            room_locked=True,
+                        )
+                        topic_id = outcome.topic_id
+                        # 같은 호출에서 받은 구조 서술을 Agent로 넘겨
+                        # 동일 발화를 두 번 분류하지 않는다.
+                        annotation = outcome.annotation
+                    else:
+                        topic_id = self.topic_routing_service.route_topic(
+                            self.db,
+                            room_id=room_id,
+                            utterance_id=utterance.utterance_id,
+                            normalized_text=normalized_text,
+                            embedding=embedding,
+                            room_locked=True,
+                        )
                 # Agent는 부가 기능이다. 핵심 발화/Topic 상태를 먼저 확정한다.
                 self.db.commit()
             except Exception:
@@ -195,6 +224,7 @@ class AutoUtteranceService:
                     topic_id=topic_id,
                     is_agent_command=is_agent_command,
                     command_text=wake_word.command_text,
+                    annotation=annotation,
                 )
             else:
                 try:
@@ -208,6 +238,7 @@ class AutoUtteranceService:
                         topic_id=topic_id,
                         is_agent_command=is_agent_command,
                         command_text=wake_word.command_text,
+                        annotation=annotation,
                     )
                     agent_events = agent_state.get("ws_events", [])
                     agent_errors = agent_state.get("errors", [])
@@ -283,6 +314,7 @@ class AutoUtteranceService:
         topic_id: UUID,
         is_agent_command: bool | None = None,
         command_text: str = "",
+        annotation: AnnotationDraft | None = None,
     ) -> None:
         task = asyncio.create_task(
             self._run_agent_and_push(
@@ -295,6 +327,7 @@ class AutoUtteranceService:
                 topic_id=topic_id,
                 is_agent_command=is_agent_command,
                 command_text=command_text,
+                annotation=annotation,
             )
         )
         _AGENT_TASKS.add(task)
@@ -312,6 +345,7 @@ class AutoUtteranceService:
         topic_id: UUID,
         is_agent_command: bool | None = None,
         command_text: str = "",
+        annotation: AnnotationDraft | None = None,
     ) -> None:
         """WS 요청 세션과 무관하게 Agent를 실행하고 결과 이벤트를 push한다."""
         started_at = time.perf_counter()
@@ -326,6 +360,7 @@ class AutoUtteranceService:
                 topic_id=topic_id,
                 is_agent_command=is_agent_command,
                 command_text=command_text,
+                annotation=annotation,
             )
         except asyncio.CancelledError:
             raise

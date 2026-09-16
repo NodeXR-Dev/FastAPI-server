@@ -79,6 +79,25 @@ class UtteranceRepository:
         for utterance in utterances:
             utterance.state = UtteranceState.REFLECT
 
+    def find_recent_by_room(
+        self,
+        db: Session,
+        *,
+        room_id: uuid.UUID,
+        limit: int,
+        exclude_utterance_id: uuid.UUID | None = None,
+    ) -> list[Utterance]:
+        """LLM에 붙일 직전 대화 맥락. 오래된 것부터 돌려준다."""
+        query = db.query(Utterance).filter(Utterance.room_id == room_id)
+        if exclude_utterance_id is not None:
+            query = query.filter(Utterance.utterance_id != exclude_utterance_id)
+        rows = (
+            query.order_by(Utterance.created_at.desc(), Utterance.utterance_id.desc())
+            .limit(limit)
+            .all()
+        )
+        return list(reversed(rows))
+
     def create(
         self,
         db: Session,

@@ -61,6 +61,20 @@ class BatchContext(BaseModel):
     semantic_memories: list[BatchMemoryRecord] = Field(default_factory=list)
 
 
+class TopicResegmentAssignment(BaseModel):
+    """배치 발화 1건의 재배정 결과."""
+
+    utterance_id: UUID
+    topic_number: int = Field(default=0, ge=0)
+    # topic_number가 0일 때, 같은 새 topic으로 묶일 발화끼리 공유하는 라벨.
+    new_topic_group: str = ""
+    new_topic_summary: str = ""
+
+
+class TopicResegmentResult(BaseModel):
+    assignments: list[TopicResegmentAssignment] = Field(default_factory=list)
+
+
 class FactCandidate(BaseModel):
     temp_id: str = Field(min_length=1, max_length=80)
     topic_id: UUID
