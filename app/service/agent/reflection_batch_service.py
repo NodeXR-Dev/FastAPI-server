@@ -27,6 +27,7 @@ from app.agent.schema.reflection_batch_schema import (
     PreparedReflection,
     ReflectionPersistenceResult,
     SemanticMemoryProposal,
+    TopicResegmentResult,
     TopicSummaryProposal,
 )
 from app.core.config import settings
@@ -36,6 +37,7 @@ from app.model.enum import (
     DesignFactLinkType,
     DesignFactType,
     SemanticMemoryType,
+    TopicStatus,
 )
 from app.model.memory import DesignFact, Utterance
 from app.repository.graph_repository import GraphRepository
@@ -344,6 +346,126 @@ class ReflectionBatchService:
             semantic_memories=semantic_memories,
         )
 
+    def apply_topic_resegmentation(
+        self,
+        *,
+        context: BatchContext,
+        result: TopicResegmentResult,
+    ) -> tuple[BatchContext, int]:
+        """배치 발화의 topic 배정을 다시 저장하고 갱신된 context를 돌려준다.
+
+        기존 topic은 합치거나 이름을 바꾸지 않는다. 이미 design_fact와
+        semantic_memory가 그 topic을 가리키고 있어서, 여기서 손대면 그것들이
+        고아가 된다. 이번 배치 발화의 소속만 다시 정한다.
+        """
+        if not result.assignments:
+            return context, 0
+
+        by_utterance = {item.utterance_id: item for item in context.utterances}
+        topics_by_number = {
+            number: item.topic_id
+            for number, item in enumerate(context.topics, start=1)
+        }
+        db = self.session_factory()
+        moved = 0
+        new_topic_records: list[BatchTopicRecord] = []
+        try:
+            group_topic_id: dict[str, UUID] = {}
+            for assignment in result.assignments:
+                record = by_utterance.get(assignment.utterance_id)
+                if record is None:
+                    logger.warning(
+                        "[reflection_resegment_unknown_utterance] utterance_id=%s",
+                        assignment.utterance_id,
+                    )
+                    continue
+
+                if assignment.topic_number in topics_by_number:
+                    target_id = topics_by_number[assignment.topic_number]
+                else:
+                    group = assignment.new_topic_group or str(assignment.utterance_id)
+                    if group not in group_topic_id:
+                        topic = self.topic_repository.create(
+                            db,
+                            room_id=context.room_id,
+                            summary=(
+                                assignment.new_topic_summary
+                                or record.normalized_text
+                            ),
+                            centroid_embedding=self._utterance_embedding(
+                                db,
+                                utterance_id=assignment.utterance_id,
+                            ),
+                        )
+                        group_topic_id[group] = topic.topic_id
+                        new_topic_records.append(
+                            BatchTopicRecord(
+                                topic_id=topic.topic_id,
+                                summary=topic.summary,
+                                status=TopicStatus.ACTIVE,
+                            )
+                        )
+                    target_id = group_topic_id[group]
+
+                if record.topic_id == target_id:
+                    continue
+                self.utterance_repository.update(
+                    db,
+                    utterance_id=assignment.utterance_id,
+                    topic_id=target_id,
+                )
+                by_utterance[assignment.utterance_id] = record.model_copy(
+                    update={"topic_id": target_id},
+                )
+                moved += 1
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+        updated = context.model_copy(
+            update={
+                "utterances": [
+                    by_utterance[item.utterance_id] for item in context.utterances
+                ],
+                "topics": [*context.topics, *new_topic_records],
+            }
+        )
+        logger.info(
+            "[reflection_resegment_applied] room_id=%s | moved_count=%s "
+            "| new_topic_count=%s",
+            context.room_id,
+            moved,
+            len(new_topic_records),
+        )
+        return updated, moved
+
+    def _utterance_embedding(self, db, *, utterance_id: UUID) -> list[float]:
+        row = db.get(Utterance, utterance_id)
+        if row is None or row.embedding is None:
+            raise ValueError(f"utterance {utterance_id} has no embedding")
+        return list(row.embedding)
+
+    @staticmethod
+    def _log_candidate_discarded(candidate: FactCandidate, *, reason: str) -> None:
+        logger.warning(
+            "[reflection_candidate_discarded] temp_id=%s | reason=%s | content=%s",
+            candidate.temp_id,
+            reason,
+            candidate.content[:60],
+        )
+
+    @staticmethod
+    def _log_candidate_repaired(candidate: FactCandidate, *, field: str) -> None:
+        logger.info(
+            "[reflection_candidate_repaired] temp_id=%s | field=%s | content=%s",
+            candidate.temp_id,
+            field,
+            candidate.content[:60],
+        )
+
     def validate_analysis(
         self,
         *,
@@ -359,22 +481,50 @@ class ReflectionBatchService:
         }
         accepted_facts: list[FactCandidate] = []
         seen_temp_ids: set[str] = set()
+        discarded_count = 0
+        repaired_count = 0
 
         for candidate in analysis.facts:
+            # LLM 출력 한 항목이 배치 전체를 죽이지 않게 한다. 발화 구간 하나를
+            # 통째로 잃는 손실이, 흠 있는 fact 하나를 버리는 손실보다 크다.
             if candidate.temp_id in seen_temp_ids:
-                raise ValueError(f"duplicate fact temp_id={candidate.temp_id}")
+                discarded_count += 1
+                self._log_candidate_discarded(candidate, reason="duplicate_temp_id")
+                continue
             seen_temp_ids.add(candidate.temp_id)
             if candidate.confidence < settings.BATCH_FACT_MIN_CONFIDENCE:
                 continue
-            source_ids = set(candidate.source_utterance_ids)
-            if not source_ids or not source_ids.issubset(utterance_topic):
-                raise ValueError(
-                    f"fact {candidate.temp_id} references an utterance outside the batch"
+
+            known_source_ids = [
+                source_id
+                for source_id in candidate.source_utterance_ids
+                if source_id in utterance_topic
+            ]
+            if not known_source_ids:
+                discarded_count += 1
+                self._log_candidate_discarded(candidate, reason="no_source_in_batch")
+                continue
+            if len(known_source_ids) != len(candidate.source_utterance_ids):
+                # 배치 밖 발화 id만 떼어내고 fact 자체는 살린다.
+                repaired_count += 1
+                self._log_candidate_repaired(candidate, field="source_utterance_ids")
+                candidate = candidate.model_copy(
+                    update={"source_utterance_ids": known_source_ids},
                 )
-            if any(utterance_topic[source_id] != candidate.topic_id for source_id in source_ids):
-                raise ValueError(
-                    f"fact {candidate.temp_id} topic does not match its source utterances"
-                )
+
+            source_topics = {utterance_topic[source_id] for source_id in known_source_ids}
+            if len(source_topics) > 1:
+                # 출처가 여러 topic에 걸치면 옳은 topic_id가 없다.
+                discarded_count += 1
+                self._log_candidate_discarded(candidate, reason="source_topic_conflict")
+                continue
+            source_topic = next(iter(source_topics))
+            if source_topic != candidate.topic_id:
+                # 정답이 출처 발화에 이미 있다. 버리지 말고 그 값으로 맞춘다.
+                repaired_count += 1
+                self._log_candidate_repaired(candidate, field="topic_id")
+                candidate = candidate.model_copy(update={"topic_id": source_topic})
+
             unknown_related_ids = [
                 fact_id
                 for fact_id in candidate.related_existing_fact_ids
@@ -413,18 +563,25 @@ class ReflectionBatchService:
                 candidate_by_id=candidate_by_id,
                 existing_by_id=existing_by_id,
             ):
-                if (
-                    link.source.reference_type == "CANDIDATE"
-                    and link.source.reference_id in seen_temp_ids
-                ) or (
-                    link.target.reference_type == "CANDIDATE"
-                    and link.target.reference_id in seen_temp_ids
-                ):
-                    # A relation that depends on a below-threshold fact is discarded too.
-                    continue
-                raise ValueError("fact link references an unknown fact")
+                # 근거 fact가 없는 링크는 저장할 수 없다. 링크 하나만 버린다.
+                discarded_count += 1
+                logger.warning(
+                    "[reflection_link_discarded] reason=unknown_fact_reference "
+                    "| source=%s:%s | target=%s:%s",
+                    link.source.reference_type,
+                    link.source.reference_id,
+                    link.target.reference_type,
+                    link.target.reference_id,
+                )
+                continue
             if link.source == link.target:
-                raise ValueError("self fact link is not allowed")
+                discarded_count += 1
+                logger.warning(
+                    "[reflection_link_discarded] reason=self_link | reference=%s:%s",
+                    link.source.reference_type,
+                    link.source.reference_id,
+                )
+                continue
             source_type = self._reference_fact_type(
                 link.source,
                 candidate_by_id=candidate_by_id,
@@ -458,6 +615,17 @@ class ReflectionBatchService:
                 raise InvalidFactRelationshipError(message)
             accepted_links.append(link)
 
+        if discarded_count or repaired_count:
+            # 배치가 "성공"해도 얼마나 버렸는지 한 줄로 보이게 한다.
+            logger.warning(
+                "[reflection_analysis_degraded] room_id=%s | discarded_count=%s "
+                "| repaired_count=%s | accepted_fact_count=%s | accepted_link_count=%s",
+                context.room_id,
+                discarded_count,
+                repaired_count,
+                len(accepted_facts),
+                len(accepted_links),
+            )
         return BatchAnalysisResult(facts=accepted_facts, links=accepted_links)
 
     async def deduplicate_facts(
